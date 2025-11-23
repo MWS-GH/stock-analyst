@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timedelta
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="MAG7 Pro Analyst V7", layout="wide", page_icon="📈")
+st.set_page_config(page_title="MAG7 Pro Analyst V8", layout="wide", page_icon="📈")
 
 # --- CSS STYLING ---
 st.markdown("""
@@ -16,6 +16,8 @@ st.markdown("""
     .metric-card { background-color: #1e1e1e; padding: 15px; border-radius: 10px; border: 1px solid #333; margin-bottom: 10px; }
     .stDataFrame { font-size: 14px; }
     div[data-testid="stMetricValue"] { font-weight: bold; font-size: 1.2rem; } 
+    /* Style für Tooltip-Marker */
+    span[title] { border-bottom: 1px dotted #888; cursor: help; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -29,22 +31,27 @@ TICKERS = {
 
 # --- FUNKTIONEN ---
 
+# NEU: HELPER FUNKTION FÜR TOOLTIPS
+def create_tooltip(text, explanation):
+    """Erzeugt einen HTML-String mit einem Tooltip (Mouseover Text)."""
+    # Das ❓-Zeichen dient als visueller Hinweis
+    html = f'<span title="{explanation}" style="cursor: help;">{text} ❓</span>'
+    # Streamlit muss dies als Markdown/HTML rendern
+    return html
+
 @st.cache_data(ttl=60)
 def get_data(ticker, interval):
     try:
-        # Period muss je nach Intervall angepasst werden, um genug Daten für SMA 200/ADX zu haben
         if interval == '1d':
-            period = "1y" # 1 Jahr für Tagesdaten
+            period = "1y"
         else:
-            period = "6mo" # 6 Monate für Stundendaten (für SMA 200)
+            period = "6mo"
 
         stock = yf.Ticker(ticker)
-        # prepost=True nur für stündliche Daten relevant
         df = stock.history(period=period, interval=interval, prepost=(interval != '1d')) 
         
         if df.empty: return pd.DataFrame()
 
-        # Zeitzone: Auf Berlin konvertieren
         if df.index.tz is None:
             df.index = df.index.tz_localize('UTC')
         df.index = df.index.tz_convert('Europe/Berlin')
@@ -54,7 +61,6 @@ def get_data(ticker, interval):
             df.ta.rsi(length=14, append=True)
             df.ta.macd(append=True)
             df.ta.atr(length=14, append=True)
-            # NEU: ADX (Trendstärke)
             df.ta.adx(length=14, append=True)
         
         if len(df) > 20: df.ta.sma(length=20, append=True)
@@ -169,7 +175,7 @@ if st.sidebar.button("🔄 Refresh Data"):
 
 
 # --- HAUPTBEREICH ---
-st.title(f"💎 MAG7 Trading Dashboard (V7 - {interval} Ansicht)")
+st.title(f"💎 MAG7 Trading Dashboard (V8 - {interval} Ansicht)")
 
 tabs = st.tabs(["🚀 SIGNALS & MARKET"] + list(TICKERS.keys()))
 
@@ -210,7 +216,6 @@ with tabs[0]:
 # === TABS: EINZELWERTE ===
 for i, (name, symbol) in enumerate(TICKERS.items()):
     with tabs[i+1]:
-        # Daten mit ausgewähltem Interval laden
         df = get_data(symbol, interval)
         
         if df.empty or len(df) < 20:
@@ -264,25 +269,38 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
 
         # --- CHEAT SHEET (Detailliert) ---
         with st.expander("🎯 S/R-Levels & Strategie-Details", expanded=False):
+            st.markdown("### Erklärung der Level")
             s1, s2, s3 = st.columns(3)
-            with s1:
-                st.markdown("**TRENDSTÄRKE (ADX)**")
-                adx_val = df['ADX_14'].iloc[-1] if 'ADX_14' in df.columns else 0
-                adx_status = "Starker Trend" if adx_val >= 25 else "Schwacher/Seitwärtstrend"
-                st.write(f"ADX: **{adx_val:.2f}**")
-                st.write(f"Status: *{adx_status}*")
-                st.markdown("---")
-                st.write(f"**RSI:** {rsi_val:.2f}")
 
+            # S/R LEVELS MIT TOOLTIPS
+            with s1:
+                st.markdown("**WIDERSTAND (R)**")
+                st.markdown(create_tooltip(f"R2: **{pivots['R2']:.2f}** 🔴", "Widerstand 2: Ein sekundäres, höheres Preisniveau, bei dem Verkaufsdruck erwartet wird."), unsafe_allow_html=True)
+                st.markdown(create_tooltip(f"R1: **{pivots['R1']:.2f}** 🔴", "Widerstand 1: Das wichtigste erwartete Preisniveau, bei dem der Aufwärtstrend gestoppt werden könnte."), unsafe_allow_html=True)
+                st.markdown(create_tooltip(f"Pivot (P): **{pivots['P']:.2f}**", "Pivot Point: Der zentrale Dreh- und Angelpunkt für den Handelstag. Bestimmt die allgemeine tägliche Tendenz."), unsafe_allow_html=True)
+            
             with s2:
-                st.markdown("**WIDERSTAND/SUPPORT**")
-                st.write(f"R2: **{pivots['R2']:.2f}** 🔴")
-                st.write(f"S2: **{pivots['S2']:.2f}** 🟢")
-                st.write(f"Pivot (P): **{pivots['P']:.2f}**")
-                st.write(f"Fib 0.618: {fibs['0.618']:.2f}")
+                st.markdown("**UNTERSTÜTZUNG (S)**")
+                st.markdown(create_tooltip(f"S1: **{pivots['S1']:.2f}** 🟢", "Unterstützung 1: Das wichtigste erwartete Preisniveau, bei dem Kaufinteresse den Kursverfall stoppen könnte."), unsafe_allow_html=True)
+                st.markdown(create_tooltip(f"S2: **{pivots['S2']:.2f}** 🟢", "Unterstützung 2: Ein sekundäres, tieferes Preisniveau, bei dem starker Kaufdruck erwartet wird."), unsafe_allow_html=True)
+                st.markdown("---")
+                
+                # FIBONACCI MIT TOOLTIP
+                fib_text = f"Fib 0.618: {fibs['0.618']:.2f}"
+                fib_exp = "Fibonacci Golden Retracement: Ein psychologisch wichtiges Level (61.8%), oft die stärkste S/R-Linie nach einer großen Bewegung."
+                st.markdown(create_tooltip(fib_text, fib_exp), unsafe_allow_html=True)
 
             with s3:
-                st.markdown("**GLEITENDE DURCHSCHNITTE**")
-                st.write(f"SMA 50: **{df['SMA_50'].iloc[-1] if 'SMA_50' in df.columns else 'N/A':.2f}**")
-                st.write(f"SMA 200: **{df['SMA_200'].iloc[-1] if 'SMA_200' in df.columns else 'N/A':.2f}**")
-                st.write(f"VWAP: {df['VWAP_D'].iloc[-1] if 'VWAP_D' in df.columns else 'N/A'}")
+                # ADX MIT TOOLTIP
+                st.markdown("**TRENDSTÄRKE**")
+                adx_val = df['ADX_14'].iloc[-1] if 'ADX_14' in df.columns else 0
+                adx_status = "Starker Trend" if adx_val >= 25 else "Schwacher/Seitwärtstrend"
+                adx_text = f"ADX (14): **{adx_val:.2f}**"
+                adx_exp = "Average Directional Index: Misst die STÄRKE eines Trends. Werte über 25 zeigen einen klaren, verlässlichen Trend an (unabhängig von der Richtung)."
+                st.markdown(create_tooltip(adx_text, adx_exp), unsafe_allow_html=True)
+                st.write(f"Status: *{adx_status}*")
+                
+                st.markdown("---")
+                st.markdown("**ZUSAMMENFASSUNG**")
+                st.write(f"**Trend (SMA50):** {'🟢 Bullish' if curr > df['SMA_50'].iloc[-1] else '🔴 Bearish'}")
+                st.write(f"**VWAP:** {df['VWAP_D'].iloc[-1] if 'VWAP_D' in df.columns else 'N/A'}")
