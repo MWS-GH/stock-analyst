@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 import plotly.graph_objects as go
-import matplotlib.pyplot as plt  # <--- Wichtig für die Heatmap-Farben
+import matplotlib.pyplot as plt 
 import time
 from datetime import datetime, timedelta
 
@@ -32,8 +32,8 @@ TICKERS = {
 def get_data(ticker):
     try:
         stock = yf.Ticker(ticker)
-        # Period 1mo für genug Daten für die Heatmap, 60m Interval
-        df = stock.history(period="1mo", interval="60m")
+        # FIX: Auf 6 Monate erhöht, damit SMA 200 (200 Stunden) sicher berechnet werden kann
+        df = stock.history(period="6mo", interval="60m")
         
         if df.empty: return pd.DataFrame()
 
@@ -46,10 +46,10 @@ def get_data(ticker):
             df.ta.macd(append=True)
             df.ta.atr(length=14, append=True)
         
-        if len(df) > 50: 
-            df.ta.sma(length=20, append=True)
-            df.ta.sma(length=50, append=True)
-            df.ta.sma(length=200, append=True)
+        # Gleitende Durchschnitte sicher berechnen
+        if len(df) > 20: df.ta.sma(length=20, append=True)
+        if len(df) > 50: df.ta.sma(length=50, append=True)
+        if len(df) > 200: df.ta.sma(length=200, append=True)
         
         try: df.ta.vwap(append=True)
         except: pass
@@ -59,9 +59,12 @@ def get_data(ticker):
         return pd.DataFrame()
 
 def calculate_fibonacci(df):
-    # Fibonacci basierend auf der High/Low Range der geladenen Daten
-    max_p = df['High'].max()
-    min_p = df['Low'].min()
+    # Wir nehmen nur den letzten Monat für die High/Low Berechnung, damit die Fibs aktuell bleiben
+    last_month = df.tail(160) # ca 1 Monat in Stunden
+    if last_month.empty: last_month = df
+    
+    max_p = last_month['High'].max()
+    min_p = last_month['Low'].min()
     diff = max_p - min_p
     
     return {
@@ -74,21 +77,14 @@ def calculate_fibonacci(df):
     }
 
 def get_hourly_heatmap_data(df):
-    # Wir berechnen die % Änderung pro Stunde
-    # Erstelle Kopie um Warnungen zu vermeiden
-    heatmap_df = df.copy()
+    # Wir nehmen nur die letzten 30 Tage für die Heatmap, sonst wird sie zu lang
+    heatmap_df = df.tail(200).copy() 
     
-    # Berechne Veränderung innerhalb der Kerze (Close - Open)
     heatmap_df['Hourly_Change'] = ((heatmap_df['Close'] - heatmap_df['Open']) / heatmap_df['Open']) * 100
-    
-    # Extrahiere Datum und Stunde
     heatmap_df['Date'] = heatmap_df.index.date
     heatmap_df['Hour'] = heatmap_df.index.hour
     
-    # Pivot Tabelle: Zeilen=Datum, Spalten=Stunde, Werte=%Change
     pivot = heatmap_df.pivot_table(index='Date', columns='Hour', values='Hourly_Change')
-    
-    # Sortiere neuestes Datum nach oben
     pivot = pivot.sort_index(ascending=False)
     
     return pivot
@@ -106,7 +102,6 @@ def get_signal_color(value, reference, type="standard"):
 # --- SIDEBAR ---
 st.sidebar.header("⚡ Steuerung")
 auto_refresh = st.sidebar.checkbox("Live Auto-Update (60s)", value=False)
-st.sidebar.info("💡 **Tipp:** Nutze die Heatmap, um zu sehen, zu welcher Uhrzeit die Aktie normalerweise steigt oder fällt.")
 
 if auto_refresh:
     time.sleep(60)
@@ -116,7 +111,7 @@ if st.sidebar.button("🔄 Refresh"):
     st.rerun()
 
 # --- HAUPTBEREICH ---
-st.title("⚡ MAG7 Time-Analyst V3")
+st.title("⚡ MAG7 Time-Analyst V3.1 (Stable)")
 
 tabs = st.tabs(["📊 Markt & Matrix"] + list(TICKERS.keys()))
 
@@ -133,6 +128,8 @@ with tabs[0]:
             prices[name] = df['Close']
             curr = df['Close'].iloc[-1]
             change = ((curr - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
+            
+            # Safe Access RSI
             rsi = df['RSI_14'].iloc[-1] if 'RSI_14' in df.columns else 50
             
             overview_data.append({
@@ -153,20 +150,19 @@ with tabs[0]:
     st.markdown("---")
     st.subheader("🔗 Live Korrelation")
     if prices:
-        # Checken ob genügend Daten für Korrelation da sind
         df_corr = pd.DataFrame(prices).dropna()
         if not df_corr.empty:
             corr = df_corr.corr()
             st.dataframe(corr.style.background_gradient(cmap="RdYlGn", axis=None).format("{:.2f}"), use_container_width=True)
-        else:
-            st.warning("Nicht genügend gemeinsame Datenpunkte für Korrelation.")
 
 # === TABS: EINZELWERTE ===
 for i, (name, symbol) in enumerate(TICKERS.items()):
     with tabs[i+1]:
         df = get_data(symbol)
-        if df.empty or 'SMA_50' not in df.columns:
-            st.warning("Lade Daten... (oder Markt geschlossen/keine Daten)")
+        
+        # Check ob minimale Daten vorhanden sind
+        if df.empty or len(df) < 5:
+            st.warning("Lade Daten... (oder Markt geschlossen)")
             continue
 
         curr = df['Close'].iloc[-1]
@@ -176,46 +172,31 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Preis", f"{curr:.2f} $", f"{curr - df['Close'].iloc[-2]:.2f} $")
         
-        # Volume Anomaly Check
         avg_vol = df['Volume'].mean()
         curr_vol = df['Volume'].iloc[-1]
-        vol_state = "🚨 SPIKE!" if curr_vol > avg_vol * 2 else "Normal"
-        c2.metric("Volumen Status", vol_state, f"{(curr_vol/avg_vol)*100:.0f}% vom Avg")
+        c2.metric("Volumen Status", "🚨 SPIKE!" if curr_vol > avg_vol * 2 else "Normal", f"{(curr_vol/avg_vol)*100:.0f}%")
         
-        c3.metric("RSI (1h)", f"{df['RSI_14'].iloc[-1]:.1f}")
-        c4.metric("Fib 0.618 (Golden)", f"{fibs['0.618 (Golden)']:.2f} $")
+        rsi_val = df['RSI_14'].iloc[-1] if 'RSI_14' in df.columns else 50
+        c3.metric("RSI (1h)", f"{rsi_val:.1f}")
+        c4.metric("Fib 0.618", f"{fibs['0.618 (Golden)']:.2f} $")
         
-        # --- HEATMAP (Das neue Feature) ---
+        # --- HEATMAP ---
         st.markdown("---")
         st.subheader("⏰ Stündliche Performance (Heatmap)")
-        st.caption("Zeigt die prozentuale Veränderung pro Stunde (Grün = Steigend, Rot = Fallend). Suche nach vertikalen Mustern!")
-        
         heatmap_df = get_hourly_heatmap_data(df)
-        
         if not heatmap_df.empty:
-            st.dataframe(
-                heatmap_df.style
-                .background_gradient(cmap='RdYlGn', vmin=-1.0, vmax=1.0) # Farbskala angepasst
-                .format("{:+.2f}%")
-                .highlight_null(color='grey'),
-                use_container_width=True,
-                height=300
-            )
+            st.dataframe(heatmap_df.style.background_gradient(cmap='RdYlGn', vmin=-1.0, vmax=1.0).format("{:+.2f}%").highlight_null(color='grey'), use_container_width=True, height=300)
 
-        # --- CHART MIT FIBONACCI & VWAP ---
+        # --- CHART ---
         st.subheader("📊 Chart Analyse")
-        
         fig = go.Figure()
-        
-        # Candles
         fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price'))
         
-        # VWAP & SMAs
         if 'VWAP_D' in df.columns:
             fig.add_trace(go.Scatter(x=df.index, y=df['VWAP_D'], line=dict(color='violet', width=2, dash='dot'), name='VWAP'))
-        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='orange', width=1), name='SMA 50'))
+        if 'SMA_50' in df.columns:
+            fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='orange', width=1), name='SMA 50'))
 
-        # Fibonacci Lines
         fig.add_hline(y=fibs['0.5 (Mid)'], line_dash="dash", line_color="yellow", annotation_text="Fib 0.5")
         fig.add_hline(y=fibs['0.618 (Golden)'], line_dash="dash", line_color="green", annotation_text="Fib 0.618")
 
@@ -225,10 +206,20 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         # --- CHEAT SHEET ---
         with st.expander("🧩 Detailliertes Cheat Sheet & Strategie", expanded=True):
             sc1, sc2, sc3 = st.columns(3)
+            
+            # Safe values holen
+            sma50_val = df['SMA_50'].iloc[-1] if 'SMA_50' in df.columns else 0
+            sma200_val = df['SMA_200'].iloc[-1] if 'SMA_200' in df.columns else 0
+            
             with sc1:
                 st.markdown("**Trend**")
-                st.write(f"SMA 50: {df['SMA_50'].iloc[-1]:.2f} | {get_signal_color(curr, df['SMA_50'].iloc[-1])}")
-                st.write(f"SMA 200: {df['SMA_200'].iloc[-1]:.2f} | {get_signal_color(curr, df['SMA_200'].iloc[-1])}")
+                # HIER WAR DER FEHLER: Jetzt mit Sicherheitscheck
+                st.write(f"SMA 50: {sma50_val:.2f} | {get_signal_color(curr, sma50_val)}")
+                if sma200_val > 0:
+                    st.write(f"SMA 200: {sma200_val:.2f} | {get_signal_color(curr, sma200_val)}")
+                else:
+                    st.write("SMA 200: N/A (Lade mehr Daten...)")
+                    
             with sc2:
                 st.markdown("**Fibonacci Levels**")
                 st.write(f"0.5 Retrace: {fibs['0.5 (Mid)']:.2f} $")
@@ -236,8 +227,8 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
             with sc3:
                 st.markdown("**Fazit**")
                 score = 0
-                if df['RSI_14'].iloc[-1] < 30: score += 1
-                if curr > df['SMA_50'].iloc[-1]: score += 1
+                if rsi_val < 30: score += 1
+                if curr > sma50_val: score += 1
                 if curr > fibs['0.5 (Mid)']: score += 1
                 
                 sentiment = "HOLD ➡️"
