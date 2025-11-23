@@ -8,13 +8,15 @@ import time
 from datetime import datetime, timedelta
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="MAG7 Pro Analyst V5", layout="wide", page_icon="💎")
+st.set_page_config(page_title="MAG7 Pro Analyst V6", layout="wide", page_icon="📈")
 
 # --- CSS STYLING ---
 st.markdown("""
 <style>
     .metric-card { background-color: #1e1e1e; padding: 15px; border-radius: 10px; border: 1px solid #333; margin-bottom: 10px; }
     .stDataFrame { font-size: 14px; }
+    /* WICHTIG: Erhöht die Sichtbarkeit der Metriken */
+    div[data-testid="stMetricValue"] { font-weight: bold; font-size: 1.2rem; } 
 </style>
 """, unsafe_allow_html=True)
 
@@ -32,7 +34,7 @@ TICKERS = {
 def get_data(ticker):
     try:
         stock = yf.Ticker(ticker)
-        # FIX: prepost=True aktiviert den Handel außerhalb der regulären US-Öffnungszeiten
+        # prepost=True lädt EHT-Daten
         df = stock.history(period="6mo", interval="60m", prepost=True) 
         
         if df.empty: return pd.DataFrame()
@@ -71,9 +73,9 @@ def calculate_fibonacci(df):
     }
 
 def calculate_pivot_points(df):
+    # Berechnung basierend auf den Werten des letzten kompletten Tages
     if df.empty or len(df) < 20: return {"P": 0, "R1": 0, "S1": 0, "R2": 0, "S2": 0}
     
-    # Wähle den letzten abgeschlossenen Tag für HLC
     last_day_date = df.index[-2].date() 
     last_day_data = df[df.index.date == last_day_date]
     
@@ -116,14 +118,15 @@ def get_hourly_heatmap_data(df):
     heatmap_df = df.tail(200).copy() 
     heatmap_df['Hourly_Change'] = ((heatmap_df['Close'] - heatmap_df['Open']) / heatmap_df['Open']) * 100
     
-    heatmap_df['Datum_Wochentag'] = heatmap_df.index.strftime("%Y-%m-%d (%a)")
+    # FIX: Vereinfachung zu nur 'Datum'
+    heatmap_df['Datum'] = heatmap_df.index.strftime("%Y-%m-%d") 
     heatmap_df['Uhrzeit'] = heatmap_df.index.strftime("%H:00")
     
-    pivot = heatmap_df.pivot_table(index='Datum_Wochentag', columns='Uhrzeit', values='Hourly_Change')
+    pivot = heatmap_df.pivot_table(index='Datum', columns='Uhrzeit', values='Hourly_Change')
     pivot = pivot.sort_index(ascending=False)
     
-    # FIX: Erweitere den Filter auf 07:00 bis 22:00 Uhr CET (entspricht 01:00 bis 16:00 ET)
-    valid_cols = [c for c in pivot.columns if "07:00" <= c <= "22:00"]
+    # FIX: Filter für 07:00 bis 23:00 Uhr (CET)
+    valid_cols = [c for c in pivot.columns if "07:00" <= c <= "23:00"] 
     pivot = pivot[valid_cols]
     
     return pivot
@@ -152,7 +155,7 @@ if st.sidebar.button("🔄 Refresh Data"):
     st.rerun()
 
 # --- HAUPTBEREICH ---
-st.title("💎 MAG7 Trading Dashboard V5 (EHT Ready)")
+st.title("💎 MAG7 Trading Dashboard V6 (S/R Fokus)")
 
 tabs = st.tabs(["🚀 SIGNALS & MARKET"] + list(TICKERS.keys()))
 
@@ -201,22 +204,22 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
 
         curr = df['Close'].iloc[-1]
         fibs = calculate_fibonacci(df)
-        pivots = calculate_pivot_points(df) # NEU: Pivot-Punkte berechnen
+        pivots = calculate_pivot_points(df) 
         signal = get_market_signal(df, curr)
         
-        # --- HEADER METRICS ---
+        # --- HEADER METRICS (Mit R1 und S1) ---
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Preis (DE Zeit)", f"{curr:.2f}", f"{curr - df['Close'].iloc[-2]:.2f}")
         c2.metric("SIGNAL", signal.replace("💎", "").replace("🔥",""))
         
-        rsi_val = df['RSI_14'].iloc[-1] if 'RSI_14' in df.columns else 50
-        c3.metric("RSI (1h)", f"{rsi_val:.1f}")
-        c4.metric("Pivot (P)", f"{pivots['P']:.2f}") # NEU: Pivot Hauptlevel
+        # NEU: S/R Levels oben anzeigen
+        c3.metric("Resistance (R1)", f"{pivots['R1']:.2f}")
+        c4.metric("Support (S1)", f"{pivots['S1']:.2f}")
 
         st.markdown("---")
         
         # --- INTELLIGENTE HEATMAP ---
-        st.subheader("⏰ Muster-Erkennung (07:00 - 22:00 Uhr CET)")
+        st.subheader("⏰ Muster-Erkennung (07:00 - 23:00 Uhr CET)")
         heatmap_df = get_hourly_heatmap_data(df)
         
         if not heatmap_df.empty:
@@ -242,17 +245,17 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         fig.update_layout(height=500, margin=dict(l=0,r=0,t=0,b=0), template="plotly_dark", xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- CHEAT SHEET (Kompakt) ---
-        with st.expander("🎯 S/R-Levels & Strategie-Details", expanded=True):
+        # --- CHEAT SHEET (Detailliert) ---
+        with st.expander("🎯 Alle S/R-Levels & Strategie-Details", expanded=False):
             s1, s2, s3 = st.columns(3)
             with s1:
                 st.markdown("**WIDERSTAND (R)**")
                 st.write(f"R2: **{pivots['R2']:.2f}** 🔴")
-                st.write(f"R1: **{pivots['R1']:.2f}** 🔴")
+                st.write(f"R1: **{pivots['R1']:.2f}** 🔴 (WICHTIG)")
                 st.write(f"Pivot (P): **{pivots['P']:.2f}**")
             with s2:
                 st.markdown("**UNTERSTÜTZUNG (S)**")
-                st.write(f"S1: **{pivots['S1']:.2f}** 🟢")
+                st.write(f"S1: **{pivots['S1']:.2f}** 🟢 (WICHTIG)")
                 st.write(f"S2: **{pivots['S2']:.2f}** 🟢")
                 st.markdown("---")
                 st.markdown("**Fibonacci**")
