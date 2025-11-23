@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="MAG7 Pro Analyst V14 (Button Fix)", layout="wide", page_icon="📈")
+st.set_page_config(page_title="MAG7 Pro Analyst V15 (Final Layout)", layout="wide", page_icon="📈")
 
 # --- CSS STYLING ---
 st.markdown("""
@@ -22,7 +22,8 @@ st.markdown("""
     .footer-header { font-weight: bold; color: #4CAF50; }
     
     /* Style für das kleine Info-Icon */
-    div.stButton > button {
+    /* st.button mit Key als Tooltip-Auslöser */
+    div[data-testid="stButton"] button {
         height: 100%;
         padding: 0;
         margin: 0;
@@ -33,27 +34,21 @@ st.markdown("""
     }
     
     /* Style für die Zeitspannen-Buttons */
-    .time-button-container {
-        display: flex;
-        gap: 5px; /* Abstand zwischen Buttons */
-    }
-    .time-button-container button {
+    /* Setzt die Button-Größe und den Stil für die Zeitauswahl */
+    div[data-testid="column"] > div[data-testid="stButton"] button {
         padding: 4px 8px; /* Kleinerer Padding */
         font-size: 0.8rem;
         background-color: #333333;
         border: 1px solid #555555;
         border-radius: 5px;
         color: white;
-        transition: background-color 0.2s;
+        width: 100%;
+        margin-top: 5px;
     }
-    .time-button-container button:hover:not(.active) {
-        background-color: #444444;
-    }
-    .time-button-container button.active {
-        background-color: #4CAF50 !important; /* Aktiver Button grün */
-        border-color: #4CAF50 !important;
-        font-weight: bold;
-    }
+    /* Aktiver Button grün (setzt den Style, wenn der Button gedrückt wurde und st.rerun stattfand) */
+    /* Streamlit hat keine einfache Möglichkeit, den "aktiven" Zustand über Reruns zu erhalten,
+       daher wird hier nur der Standard- und Hover-Zustand gesetzt. Der eigentliche aktive Zustand
+       wird über den Rerun-Effekt durch das Fehlen anderer Klicks simuliert. */
 </style>
 """, unsafe_allow_html=True)
 
@@ -152,6 +147,7 @@ def get_normalized_data(tickers, interval):
         except Exception:
             pass
             
+    # FIX: Verhindert den ValueError bei leerem Dictionary
     if not data:
         return pd.DataFrame()
         
@@ -249,16 +245,13 @@ if auto_refresh:
     time.sleep(60)
     st.rerun()
 if st.sidebar.button("🔄 Refresh Data"):
+    # Erlaubt dem Benutzer, den Cache manuell zu löschen
     st.cache_data.clear()
     st.rerun()
 
-# --- INITIALISIERUNG DES SESSION STATE FÜR RANGE (NEU) ---
-if 'chart_range' not in st.session_state:
-    st.session_state['chart_range'] = '3 Monate'
-
 
 # --- HAUPTBEREICH ---
-st.title(f"💎 MAG7 Trading Dashboard (V14 - {interval} Ansicht)")
+st.title(f"💎 MAG7 Trading Dashboard (V15 - {interval} Ansicht)")
 
 tabs = st.tabs(["🚀 SIGNALS & MARKET"] + TICKER_NAMES)
 
@@ -356,6 +349,7 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         c1.metric("Preis (DE Zeit)", f"{curr:.2f}", f"{curr - df['Close'].iloc[-2]:.2f}")
         c2.metric("SIGNAL", signal.replace("💎", "").replace("🔥",""))
         
+        # Tooltip ist bei st.metric möglich
         c3.metric("Resistance (R1)", f"{pivots['R1']:.2f}", help=TOOLTIPS['R1'])
         c4.metric("Support (S1)", f"{pivots['S1']:.2f}", help=TOOLTIPS['S1'])
 
@@ -369,15 +363,16 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
             "1D": 1
         }
         
-        # Standardwert setzen
+        # KORREKTUR V15: Session State auf einen gültigen Key initialisieren
         if f'range_{symbol}' not in st.session_state:
             st.session_state[f'range_{symbol}'] = '3M'
-            
+        
         st.subheader(f"📊 Chart Analyse ({interval})")
         
-        # Buttons in einer Zeile (Container) anzeigen
-        button_cols = st.columns(len(range_options) + 2) # +2 für Abstand
+        # Buttons in einer Zeile anzeigen (4 Buttons + 1 Label)
+        button_cols = st.columns(len(range_options) + 1)
         
+        # Aktuellen Key abrufen
         selected_range_key = st.session_state[f'range_{symbol}']
         
         with button_cols[0]:
@@ -385,34 +380,35 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
 
         # Buttons erstellen
         for idx, (label, days) in enumerate(range_options.items()):
-            is_active = (label == selected_range_key)
-            
-            # CSS Klasse für den aktiven Button setzen
-            button_style = "active" if is_active else ""
-            
-            # Button im nächsten Column platzieren
             with button_cols[idx + 1]:
-                if st.button(label, key=f"btn_{symbol}_{label}"):
-                    st.session_state[f'range_{symbol}'] = label
-                    # Rerun, um das Chart neu zu laden
-                    st.rerun()
-                # Manuelle Anwendung der CSS-Klasse (nicht direkt in st.button möglich)
-                if is_active:
-                     st.markdown(f"""
-                         <script>
-                            var buttons = parent.document.querySelectorAll('[data-testid="stButton"] button');
-                            buttons.forEach(function(btn){{
-                                if (btn.textContent === '{label}' && btn.id.includes('{symbol}')) {{
-                                    btn.classList.add('active');
-                                }}
-                            }});
-                         </script>
-                         """, unsafe_allow_html=True)
+                # Streamlit setzt keine permanente "active" Klasse; wir nutzen den Rerun-Effekt
+                if st.button(label, key=f"btn_{symbol}_{label}", use_container_width=True):
+                    # Nur Rerun, wenn sich die Auswahl ändert
+                    if st.session_state[f'range_{symbol}'] != label:
+                        st.session_state[f'range_{symbol}'] = label
+                        st.rerun()
 
-
+        # Manuelle CSS-Hervorhebung für den aktiven Button nach dem Rerun
+        st.markdown(f"""
+            <script>
+                // Wählt den aktiven Button anhand des Labels und Symbols aus und setzt ihn grün
+                var active_btn = parent.document.querySelector('[data-testid="stButton"] button[id*="btn_{symbol}_{selected_range_key}"]:not([id*="btn_{symbol}_{selected_range_key}"] div)');
+                if (active_btn) {{
+                    active_btn.style.backgroundColor = '#4CAF50';
+                    active_btn.style.borderColor = '#4CAF50';
+                    active_btn.style.fontWeight = 'bold';
+                }}
+            </script>
+            """, unsafe_allow_html=True)
+            
         st.markdown("---") # Trennung zwischen Buttons und Chart
         
-        days_to_show = range_options[st.session_state[f'range_{symbol}']]
+        # Sicherstellen, dass der Key existiert, falls der Cache alt ist
+        try:
+            days_to_show = range_options[selected_range_key]
+        except KeyError:
+            st.session_state[f'range_{symbol}'] = '3M'
+            days_to_show = range_options['3M']
         
         start_date = df.index[-1].date() - timedelta(days=days_to_show)
         df_display = df[df.index.date >= start_date]
@@ -493,6 +489,7 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
             st.markdown(f'<div class="footer-box">', unsafe_allow_html=True)
             st.markdown(f'<div class="footer-header">PIVOT PUNKTE (Täglich)</div>', unsafe_allow_html=True)
             
+            # Nutzung der Hilfsfunktion für klickbares Icon/Tooltip
             display_info_text("R2 (Widerst.)", f"{pivots['R2']:.2f} 🔴", 'R2', "❓")
             display_info_text("R1 (Widerst.)", f"{pivots['R1']:.2f} 🔴", 'R1', "❓")
             display_info_text("Pivot (P)", f"{pivots['P']:.2f}", 'PIVOT_P', "❓")
@@ -505,6 +502,7 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
             st.markdown(f'<div class="footer-box">', unsafe_allow_html=True)
             st.markdown(f'<div class="footer-header">FIBONACCI & VWAP</div>', unsafe_allow_html=True)
             
+            # Nutzung der Hilfsfunktion für klickbares Icon/Tooltip
             display_info_text("Fib 0.618", f"{fibs['0.618']:.2f}", 'FIB_0618', "❓")
             
             st.write(f"VWAP: **{df['VWAP_D'].iloc[-1] if 'VWAP_D' in df.columns else 'N/A':.2f}**")
