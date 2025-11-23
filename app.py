@@ -3,21 +3,23 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 import plotly.graph_objects as go
-import matplotlib.pyplot as plt 
 import time
 from datetime import datetime, timedelta
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="MAG7 Pro Analyst V8", layout="wide", page_icon="📈")
+st.set_page_config(page_title="MAG7 Pro Analyst V10 (Time & Comp)", layout="wide", page_icon="📈")
 
 # --- CSS STYLING ---
 st.markdown("""
 <style>
+    /* Allgemeine Styles für Metriken und Tabellen */
     .metric-card { background-color: #1e1e1e; padding: 15px; border-radius: 10px; border: 1px solid #333; margin-bottom: 10px; }
     .stDataFrame { font-size: 14px; }
     div[data-testid="stMetricValue"] { font-weight: bold; font-size: 1.2rem; } 
-    /* Style für Tooltip-Marker */
-    span[title] { border-bottom: 1px dotted #888; cursor: help; }
+
+    /* Spezielles Styling für den neuen Footer */
+    .footer-box { padding: 10px; border-radius: 5px; margin-bottom: 10px; border: 1px solid #333; }
+    .footer-header { font-weight: bold; color: #4CAF50; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -28,19 +30,25 @@ TICKERS = {
     "Meta": "META", "Tesla": "TSLA", "S&P 500": "^GSPC", 
     "Nasdaq": "^IXIC", "VIX": "^VIX"
 }
+TICKER_SYMBOLS = list(TICKERS.values())
+TICKER_NAMES = list(TICKERS.keys())
+
+# --- TOOLTIP TEXTE (unverändert) ---
+TOOLTIPS = {
+    "ADX": "Average Directional Index: Misst die STÄRKE eines Trends. Werte über 25 zeigen einen klaren, verlässlichen Trend an (unabhängig von der Richtung).",
+    "FIB_0618": "Fibonacci Golden Retracement: Ein psychologisch wichtiges Level (61.8%), oft die stärkste S/R-Linie nach einer großen Bewegung.",
+    "PIVOT_P": "Pivot Point: Der zentrale Dreh- und Angelpunkt für den Handelstag. Bestimmt die allgemeine tägliche Tendenz.",
+    "R1": "Resistance 1: Das wichtigste erwartete Preisniveau, bei dem der Aufwärtstrend gestoppt werden könnte.",
+    "S1": "Support 1: Das wichtigste erwartete Preisniveau, bei dem Kaufinteresse den Kursverfall stoppen könnte.",
+    "R2": "Resistance 2: Ein sekundäres, höheres Preisniveau, bei dem Verkaufsdruck erwartet wird.",
+    "S2": "Support 2: Ein sekundäres, tieferes Preisniveau, bei dem starker Kaufdruck erwartet wird.",
+}
 
 # --- FUNKTIONEN ---
 
-# NEU: HELPER FUNKTION FÜR TOOLTIPS
-def create_tooltip(text, explanation):
-    """Erzeugt einen HTML-String mit einem Tooltip (Mouseover Text)."""
-    # Das ❓-Zeichen dient als visueller Hinweis
-    html = f'<span title="{explanation}" style="cursor: help;">{text} ❓</span>'
-    # Streamlit muss dies als Markdown/HTML rendern
-    return html
-
 @st.cache_data(ttl=60)
 def get_data(ticker, interval):
+    # Logik wie in V9 (Daten holen und Indikatoren berechnen)
     try:
         if interval == '1d':
             period = "1y"
@@ -56,7 +64,6 @@ def get_data(ticker, interval):
             df.index = df.index.tz_localize('UTC')
         df.index = df.index.tz_convert('Europe/Berlin')
 
-        # INDIKATOREN
         if len(df) > 14:
             df.ta.rsi(length=14, append=True)
             df.ta.macd(append=True)
@@ -74,9 +81,41 @@ def get_data(ticker, interval):
     except Exception as e:
         return pd.DataFrame()
 
-# ... (Die Funktionen calculate_fibonacci, calculate_pivot_points, get_market_signal bleiben unverändert) ...
+@st.cache_data(ttl=60)
+def get_normalized_data(tickers, interval):
+    if not tickers:
+        return pd.DataFrame()
+    
+    # Da wir Vergleiche brauchen, ist es einfacher, alle Daten neu zu holen,
+    # da die Cache-Daten ggf. unterschiedliche Startpunkte haben.
+    data = {}
+    
+    # Für den Vergleich nehmen wir immer die Schlusskurse der letzten 3 Monate
+    # (3 Monate Period ist stabil für 60m und 1d Intervalle)
+    for symbol in tickers:
+        try:
+            df = yf.download(symbol, period="3mo", interval=interval, prepost=(interval != '1d'))['Close']
+            if not df.empty:
+                data[symbol] = df
+        except Exception:
+            pass
+
+    if not data:
+        return pd.DataFrame()
+
+    df_comp = pd.DataFrame(data).dropna()
+    
+    if df_comp.empty:
+        return pd.DataFrame()
+        
+    # Normalisierung: Alle Kurse auf den Startpunkt (100) setzen
+    # loc[0] ist der erste Kurs, der verwendet wird
+    normalized = df_comp.div(df_comp.iloc[0]) * 100
+    
+    return normalized
 
 def calculate_fibonacci(df):
+    # Unverändert
     last_window = df.tail(160)
     if last_window.empty: last_window = df
     max_p = last_window['High'].max()
@@ -88,40 +127,36 @@ def calculate_fibonacci(df):
     }
 
 def calculate_pivot_points(df):
+    # Unverändert
     if df.empty or len(df) < 20: return {"P": 0, "R1": 0, "S1": 0, "R2": 0, "S2": 0}
-    
-    last_day_date = df.index[-2].date() 
-    last_day_data = df[df.index.date == last_day_date]
-    
-    if last_day_data.empty:
+    try:
+        last_day_date = df.index[-2].date() 
+        last_day_data = df[df.index.date == last_day_date]
+        if last_day_data.empty: return {"P": 0, "R1": 0, "S1": 0, "R2": 0, "S2": 0}
+        high = last_day_data['High'].max()
+        low = last_day_data['Low'].min()
+        close = last_day_data['Close'].iloc[-1]
+    except IndexError:
         return {"P": 0, "R1": 0, "S1": 0, "R2": 0, "S2": 0}
-
-    high = last_day_data['High'].max()
-    low = last_day_data['Low'].min()
-    close = last_day_data['Close'].iloc[-1]
-    
     p = (high + low + close) / 3
     r1 = (2 * p) - low
     s1 = (2 * p) - high
     r2 = p + (high - low)
     s2 = p - (high - low)
-    
     return {"P": p, "R1": r1, "S1": s1, "R2": r2, "S2": s2}
 
 def get_market_signal(df, curr):
+    # Unverändert
     score = 0
     if 'RSI_14' in df.columns:
         if df['RSI_14'].iloc[-1] < 30: score += 2 
         elif df['RSI_14'].iloc[-1] > 70: score -= 2
-    
     if 'SMA_50' in df.columns:
         if curr > df['SMA_50'].iloc[-1]: score += 1
         else: score -= 1
-        
     if 'VWAP_D' in df.columns:
         if curr > df['VWAP_D'].iloc[-1]: score += 1
         else: score -= 1
-
     if score >= 3: return "💎 STRONG BUY"
     elif score >= 1: return "🟢 BUY"
     elif score <= -3: return "🔥 STRONG SELL"
@@ -129,28 +164,27 @@ def get_market_signal(df, curr):
     return "🟡 WAIT"
 
 def get_hourly_heatmap_data(df):
+    # Unverändert
+    if df.index.inferred_freq in ['1d', 'D']:
+         return pd.DataFrame()
     heatmap_df = df.tail(200).copy() 
     heatmap_df['Hourly_Change'] = ((heatmap_df['Close'] - heatmap_df['Open']) / heatmap_df['Open']) * 100
-    
     heatmap_df['Datum'] = heatmap_df.index.strftime("%Y-%m-%d") 
     heatmap_df['Uhrzeit'] = heatmap_df.index.strftime("%H:00")
-    
     pivot = heatmap_df.pivot_table(index='Datum', columns='Uhrzeit', values='Hourly_Change')
     pivot = pivot.sort_index(ascending=False)
-    
     valid_cols = [c for c in pivot.columns if "07:00" <= c <= "23:00"] 
     pivot = pivot[valid_cols]
-    
     return pivot
 
 def analyze_vertical_patterns(pivot):
+    # Unverändert
     hints = []
     for col in pivot.columns:
         col_data = pivot[col].dropna()
         if len(col_data) > 5:
             pos_ratio = (col_data > 0).sum() / len(col_data)
             neg_ratio = (col_data < 0).sum() / len(col_data)
-            
             if pos_ratio > 0.65:
                 hints.append(f"⏰ **{col} Uhr:** Bullish Tendenz! ({pos_ratio*100:.0f}% grün)")
             elif neg_ratio > 0.65:
@@ -163,7 +197,7 @@ interval = st.sidebar.selectbox(
     "Zeitfenster (Interval)",
     ('60m', '30m', '1d'),
     index=0,
-    help="Wechsle zwischen Stunden- und Tagesansicht. Heatmap nur bei Stundenansicht verfügbar."
+    help="Wechsle zwischen Stunden- und Tagesansicht. Die Heatmap ist nur bei Stundenansicht verfügbar."
 )
 auto_refresh = st.sidebar.checkbox("Live Auto-Update (60s)", value=False)
 if auto_refresh:
@@ -175,13 +209,14 @@ if st.sidebar.button("🔄 Refresh Data"):
 
 
 # --- HAUPTBEREICH ---
-st.title(f"💎 MAG7 Trading Dashboard (V8 - {interval} Ansicht)")
+st.title(f"💎 MAG7 Trading Dashboard (V10 - {interval} Ansicht)")
 
-tabs = st.tabs(["🚀 SIGNALS & MARKET"] + list(TICKERS.keys()))
+tabs = st.tabs(["🚀 SIGNALS & MARKET"] + TICKER_NAMES)
 
-# === TAB 0: SIGNAL ÜBERSICHT ===
+# === TAB 0: SIGNAL ÜBERSICHT & VERGLEICH ===
 with tabs[0]:
     st.subheader("Aktuelle Trading Signale (Live)")
+    # (Unveränderte Code-Logik für die Signal-Tabelle)
     overview_data = []
     prog = st.progress(0)
     
@@ -200,7 +235,7 @@ with tabs[0]:
             signal = get_market_signal(df, curr)
             rsi = df['RSI_14'].iloc[-1] if 'RSI_14' in df.columns else 50
             
-            overview_data.append({"Asset": name, "SIGNAL": signal, "Preis (€/$)": curr, "Change %": change, "RSI": rsi})
+            overview_data.append({"Asset": name, "SYMBOL": sym, "SIGNAL": signal, "Preis (€/$)": curr, "Change %": change, "RSI": rsi})
         prog.progress((i+1)/len(TICKERS))
     prog.empty()
     
@@ -212,8 +247,53 @@ with tabs[0]:
             .applymap(lambda x: 'color: #00ff00' if x > 0 else 'color: #ff4b4b', subset=['Change %']),
             use_container_width=True, height=600
         )
+    
+    st.markdown("---")
+    
+    # NEU: Vergleichs-Chart
+    st.subheader("📈 Normalisierte Performance im Vergleich")
+    
+    # Checkboxen zur Auswahl der Assets
+    selection_col, range_col = st.columns([3, 1])
+    
+    with selection_col:
+        selected_names = st.multiselect(
+            "Wähle Assets für den Vergleich", 
+            options=TICKER_NAMES, 
+            default=["NVIDIA", "Microsoft", "Nasdaq"]
+        )
+    
+    # Mapping der Namen zu Symbolen
+    selected_symbols = [TICKERS[name] for name in selected_names if name in TICKERS]
+    
+    if selected_symbols:
+        comp_df = get_normalized_data(selected_symbols, interval)
+        
+        if not comp_df.empty:
+            fig_comp = go.Figure()
+            
+            # Alle Linien hinzufügen
+            for symbol in selected_symbols:
+                name = [k for k, v in TICKERS.items() if v == symbol][0]
+                if symbol in comp_df.columns:
+                    fig_comp.add_trace(go.Scatter(x=comp_df.index, y=comp_df[symbol], mode='lines', name=name))
+            
+            # Layout anpassen
+            fig_comp.update_layout(
+                title='Normalisierte Performance (Start = 100)',
+                yaxis_title='Performance (%)',
+                legend_title='Asset',
+                template="plotly_dark",
+                height=500
+            )
+            st.plotly_chart(fig_comp, use_container_width=True)
+        else:
+            st.warning("Keine vergleichbaren Daten für die ausgewählten Assets oder das gewählte Intervall verfügbar.")
+    else:
+        st.info("Bitte wähle mindestens ein Asset für den Vergleich aus.")
 
-# === TABS: EINZELWERTE ===
+
+# === TABS: EINZELWERTE MIT ZEITSPANNE ===
 for i, (name, symbol) in enumerate(TICKERS.items()):
     with tabs[i+1]:
         df = get_data(symbol, interval)
@@ -232,14 +312,37 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         c1.metric("Preis (DE Zeit)", f"{curr:.2f}", f"{curr - df['Close'].iloc[-2]:.2f}")
         c2.metric("SIGNAL", signal.replace("💎", "").replace("🔥",""))
         
-        c3.metric("Resistance (R1)", f"{pivots['R1']:.2f}")
-        c4.metric("Support (S1)", f"{pivots['S1']:.2f}")
+        c3.metric("Resistance (R1)", f"{pivots['R1']:.2f}", help=TOOLTIPS['R1'])
+        c4.metric("Support (S1)", f"{pivots['S1']:.2f}", help=TOOLTIPS['S1'])
 
         st.markdown("---")
         
-        # --- HEATMAP & ADX ---
+        # NEU: ZEITSPANNEN-AUSWAHL
+        range_options = {
+            "3 Monate": 90, 
+            "1 Monat": 30, 
+            "1 Woche": 7, 
+            "1 Tag": 1
+        }
+        
+        range_selection = st.selectbox(
+            "Chart-Zeitspanne",
+            list(range_options.keys()),
+            index=0,
+            key=f"range_{symbol}" # Eindeutiger Key für Streamlit
+        )
+        
+        days_to_show = range_options[range_selection]
+        
+        # Daten für den Chart filtern
+        start_date = df.index[-1].date() - timedelta(days=days_to_show)
+        df_display = df[df.index.date >= start_date]
+
+        # --- HEATMAP ---
         if interval != '1d':
             st.subheader("⏰ Muster-Erkennung (07:00 - 23:00 Uhr CET)")
+            # Hinweis: Die Heatmap nutzt die vollen 200 Bars, unabhängig von der Range-Auswahl, 
+            # um historische Muster zu finden.
             heatmap_df = get_hourly_heatmap_data(df)
             
             if not heatmap_df.empty:
@@ -251,56 +354,79 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         else:
             st.info("Heatmap ist nur für Stunden-Intervalle (30m / 60m) verfügbar.")
         
+        st.markdown("---")
+
         # --- CHART ---
-        st.subheader(f"📊 Chart Analyse ({interval})")
+        st.subheader(f"📊 Chart Analyse ({interval} / {range_selection})")
         fig = go.Figure()
         
-        fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Kurs'))
+        # Chart mit den gefilterten Daten erstellen
+        fig.add_trace(go.Candlestick(x=df_display.index, open=df_display['Open'], high=df_display['High'], low=df_display['Low'], close=df_display['Close'], name='Kurs'))
         
-        if 'VWAP_D' in df.columns:
-            fig.add_trace(go.Scatter(x=df.index, y=df['VWAP_D'], line=dict(color='violet', width=2, dash='dot'), name='VWAP'))
-        if 'SMA_50' in df.columns:
-            fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='orange', width=1), name='SMA 50'))
+        if 'VWAP_D' in df_display.columns:
+            fig.add_trace(go.Scatter(x=df_display.index, y=df_display['VWAP_D'], line=dict(color='violet', width=2, dash='dot'), name='VWAP'))
+        if 'SMA_50' in df_display.columns:
+            fig.add_trace(go.Scatter(x=df_display.index, y=df_display['SMA_50'], line=dict(color='orange', width=1), name='SMA 50'))
 
-        fig.add_hline(y=fibs['0.618'], line_dash="dash", line_color="green", annotation_text="Fib 0.618")
+        fig.add_hline(y=fibs['0.618'], line_dash="dash", line_color="green", annotation_text="Fib 0.618", annotation_position="bottom right")
 
         fig.update_layout(height=500, margin=dict(l=0,r=0,t=0,b=0), template="plotly_dark", xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- CHEAT SHEET (Detailliert) ---
-        with st.expander("🎯 S/R-Levels & Strategie-Details", expanded=False):
-            st.markdown("### Erklärung der Level")
-            s1, s2, s3 = st.columns(3)
+        st.markdown("---")
+        
+        # --- OPTISCH VERBESSERTER CHEAT SHEET BEREICH (unverändert) ---
+        
+        st.header("🎯 Strategie-Cheat Sheet")
+        
+        adx_val = df['ADX_14'].iloc[-1] if 'ADX_14' in df.columns else 0
+        rsi_val = df['RSI_14'].iloc[-1] if 'RSI_14' in df.columns else 50
+        adx_status = "Starker Trend 📈" if adx_val >= 25 else "Schwacher/Seitwärtstrend 🟡"
+        adx_color = "green-status" if adx_val >= 25 else "yellow-status"
+        trend_status = '🟢 Bullish' if curr > df['SMA_50'].iloc[-1] else '🔴 Bearish'
+        
+        col_adx, col_rsi, col_trend = st.columns(3)
+        
+        with col_adx:
+            st.markdown(f'<div class="footer-box">', unsafe_allow_html=True)
+            st.markdown(f'<div class="footer-header">TREND STÄRKE (ADX)</div>', unsafe_allow_html=True)
+            st.metric(label="ADX (14)", value=f"{adx_val:.2f}", help=TOOLTIPS['ADX'])
+            st.markdown(f'<span class="{adx_color}">{adx_status}</span>', unsafe_allow_html=True)
+            st.markdown(f'</div>', unsafe_allow_html=True)
 
-            # S/R LEVELS MIT TOOLTIPS
-            with s1:
-                st.markdown("**WIDERSTAND (R)**")
-                st.markdown(create_tooltip(f"R2: **{pivots['R2']:.2f}** 🔴", "Widerstand 2: Ein sekundäres, höheres Preisniveau, bei dem Verkaufsdruck erwartet wird."), unsafe_allow_html=True)
-                st.markdown(create_tooltip(f"R1: **{pivots['R1']:.2f}** 🔴", "Widerstand 1: Das wichtigste erwartete Preisniveau, bei dem der Aufwärtstrend gestoppt werden könnte."), unsafe_allow_html=True)
-                st.markdown(create_tooltip(f"Pivot (P): **{pivots['P']:.2f}**", "Pivot Point: Der zentrale Dreh- und Angelpunkt für den Handelstag. Bestimmt die allgemeine tägliche Tendenz."), unsafe_allow_html=True)
-            
-            with s2:
-                st.markdown("**UNTERSTÜTZUNG (S)**")
-                st.markdown(create_tooltip(f"S1: **{pivots['S1']:.2f}** 🟢", "Unterstützung 1: Das wichtigste erwartete Preisniveau, bei dem Kaufinteresse den Kursverfall stoppen könnte."), unsafe_allow_html=True)
-                st.markdown(create_tooltip(f"S2: **{pivots['S2']:.2f}** 🟢", "Unterstützung 2: Ein sekundäres, tieferes Preisniveau, bei dem starker Kaufdruck erwartet wird."), unsafe_allow_html=True)
-                st.markdown("---")
-                
-                # FIBONACCI MIT TOOLTIP
-                fib_text = f"Fib 0.618: {fibs['0.618']:.2f}"
-                fib_exp = "Fibonacci Golden Retracement: Ein psychologisch wichtiges Level (61.8%), oft die stärkste S/R-Linie nach einer großen Bewegung."
-                st.markdown(create_tooltip(fib_text, fib_exp), unsafe_allow_html=True)
+        with col_rsi:
+            st.markdown(f'<div class="footer-box">', unsafe_allow_html=True)
+            st.markdown(f'<div class="footer-header">MOMENTUM (RSI)</div>', unsafe_allow_html=True)
+            st.metric(label="RSI (14)", value=f"{rsi_val:.2f}", delta=("ÜBERKAUFT" if rsi_val > 70 else "ÜBERVERKAUFT" if rsi_val < 30 else None))
+            st.markdown(f'</div>', unsafe_allow_html=True)
 
-            with s3:
-                # ADX MIT TOOLTIP
-                st.markdown("**TRENDSTÄRKE**")
-                adx_val = df['ADX_14'].iloc[-1] if 'ADX_14' in df.columns else 0
-                adx_status = "Starker Trend" if adx_val >= 25 else "Schwacher/Seitwärtstrend"
-                adx_text = f"ADX (14): **{adx_val:.2f}**"
-                adx_exp = "Average Directional Index: Misst die STÄRKE eines Trends. Werte über 25 zeigen einen klaren, verlässlichen Trend an (unabhängig von der Richtung)."
-                st.markdown(create_tooltip(adx_text, adx_exp), unsafe_allow_html=True)
-                st.write(f"Status: *{adx_status}*")
-                
-                st.markdown("---")
-                st.markdown("**ZUSAMMENFASSUNG**")
-                st.write(f"**Trend (SMA50):** {'🟢 Bullish' if curr > df['SMA_50'].iloc[-1] else '🔴 Bearish'}")
-                st.write(f"**VWAP:** {df['VWAP_D'].iloc[-1] if 'VWAP_D' in df.columns else 'N/A'}")
+        with col_trend:
+            st.markdown(f'<div class="footer-box">', unsafe_allow_html=True)
+            st.markdown(f'<div class="footer-header">LANGFR. TREND (SMA)</div>', unsafe_allow_html=True)
+            st.write(f"SMA 50: **{df['SMA_50'].iloc[-1] if 'SMA_50' in df.columns else 'N/A':.2f}**")
+            st.write(f"Status: {trend_status}")
+            st.markdown(f'</div>', unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        st.subheader("S/R-Level und wichtige Zonen")
+        
+        c_pivots, c_fib, c_vwa = st.columns(3)
+
+        with c_pivots:
+            st.markdown(f'<div class="footer-box">', unsafe_allow_html=True)
+            st.markdown(f'<div class="footer-header">PIVOT PUNKTE (Täglich)</div>', unsafe_allow_html=True)
+            st.write(f"R2 (Widerst.): **{pivots['R2']:.2f}** 🔴", help=TOOLTIPS['R2'])
+            st.write(f"R1 (Widerst.): **{pivots['R1']:.2f}** 🔴", help=TOOLTIPS['R1'])
+            st.write(f"Pivot (P): **{pivots['P']:.2f}**", help=TOOLTIPS['PIVOT_P'])
+            st.write(f"S1 (Unterst.): **{pivots['S1']:.2f}** 🟢", help=TOOLTIPS['S1'])
+            st.write(f"S2 (Unterst.): **{pivots['S2']:.2f}** 🟢", help=TOOLTIPS['S2'])
+            st.markdown(f'</div>', unsafe_allow_html=True)
+
+        with c_fib:
+            st.markdown(f'<div class="footer-box">', unsafe_allow_html=True)
+            st.markdown(f'<div class="footer-header">FIBONACCI & VWAP</div>', unsafe_allow_html=True)
+            st.write(f"Fib 0.618: **{fibs['0.618']:.2f}**", help=TOOLTIPS['FIB_0618'])
+            st.write(f"VWAP: **{df['VWAP_D'].iloc[-1] if 'VWAP_D' in df.columns else 'N/A':.2f}**")
+            st.write(f"SMA 200: **{df['SMA_200'].iloc[-1] if 'SMA_200' in df.columns else 'N/A':.2f}**")
+            st.markdown(f'</div>', unsafe_allow_html=True)
