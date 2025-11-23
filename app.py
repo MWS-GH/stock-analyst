@@ -4,22 +4,16 @@ import pandas as pd
 import pandas_ta as ta
 import plotly.graph_objects as go
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="MAG7 & AMD Pro Analyst", layout="wide", page_icon="📈")
+st.set_page_config(page_title="MAG7 & AMD Ultimate", layout="wide", page_icon="⚡")
 
 # --- CSS STYLING ---
 st.markdown("""
 <style>
-    .metric-card {
-        background-color: #1e1e1e;
-        padding: 15px;
-        border-radius: 10px;
-        border: 1px solid #333;
-        margin-bottom: 10px;
-    }
-    .stDataFrame { font-size: 14px; }
+    .metric-card { background-color: #1e1e1e; padding: 15px; border-radius: 10px; border: 1px solid #333; margin-bottom: 10px; }
+    .stDataFrame { font-size: 13px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -33,253 +27,214 @@ TICKERS = {
 
 # --- FUNKTIONEN ---
 
-@st.cache_data(ttl=60) # Cache Daten für 60 Sekunden
+@st.cache_data(ttl=60)
 def get_data(ticker):
     try:
-        # Wir nutzen history() für stabilere Daten
         stock = yf.Ticker(ticker)
-        # Period 6mo um genug Daten für SMA200 zu haben, Interval 60m für Stunden-Trading
-        df = stock.history(period="6mo", interval="60m")
+        # Period 1mo für genug Daten für die Heatmap, 60m Interval
+        df = stock.history(period="1mo", interval="60m")
         
         if df.empty: return pd.DataFrame()
 
-        # Zeitzone entfernen (verhindert Plotly/Pandas Konflikte)
+        # Zeitzone entfernen
         df.index = df.index.tz_localize(None)
 
-        # --- INDIKATOREN BERECHNEN (Pandas TA) ---
-        # 1. Standard Indikatoren
+        # INDIKATOREN
         if len(df) > 14:
             df.ta.rsi(length=14, append=True)
             df.ta.macd(append=True)
-            df.ta.atr(length=14, append=True) # ATR (Volatilität)
+            df.ta.atr(length=14, append=True)
         
-        # 2. Gleitende Durchschnitte (Checks falls Aktie zu neu)
-        if len(df) > 20: df.ta.sma(length=20, append=True)
-        if len(df) > 50: df.ta.sma(length=50, append=True)
-        if len(df) > 200: df.ta.sma(length=200, append=True)
+        if len(df) > 50: 
+            df.ta.sma(length=20, append=True)
+            df.ta.sma(length=50, append=True)
+            df.ta.sma(length=200, append=True)
         
-        # 3. VWAP (Volume Weighted Average Price)
-        # Benötigt High, Low, Close, Volume -> haben wir
-        try:
-            df.ta.vwap(append=True)
-        except:
-            pass # Falls Berechnung fehlschlägt (z.B. Index ohne Volumen)
+        try: df.ta.vwap(append=True)
+        except: pass
 
         return df
     except Exception as e:
-        st.error(f"Fehler bei {ticker}: {e}")
         return pd.DataFrame()
 
-def calculate_pivot_points(df):
-    if df.empty: return {"P": 0, "R1": 0, "S1": 0, "R2": 0, "S2": 0}
+def calculate_fibonacci(df):
+    # Fibonacci basierend auf der High/Low Range der geladenen Daten
+    max_p = df['High'].max()
+    min_p = df['Low'].min()
+    diff = max_p - min_p
     
-    # Wir nehmen die letzten 8 Stunden (ca. 1 Handelstag) für Intraday Pivots
-    recent = df.tail(8)
-    high = recent['High'].max()
-    low = recent['Low'].min()
-    close = recent['Close'].iloc[-1]
+    return {
+        "0.0 (High)": max_p,
+        "0.236": max_p - 0.236 * diff,
+        "0.382": max_p - 0.382 * diff,
+        "0.5 (Mid)": max_p - 0.5 * diff,
+        "0.618 (Golden)": max_p - 0.618 * diff,
+        "1.0 (Low)": min_p
+    }
+
+def get_hourly_heatmap_data(df):
+    # Wir berechnen die % Änderung pro Stunde
+    # Erstelle Kopie um Warnungen zu vermeiden
+    heatmap_df = df.copy()
     
-    p = (high + low + close) / 3
-    r1 = (2 * p) - low
-    s1 = (2 * p) - high
-    r2 = p + (high - low)
-    s2 = p - (high - low)
+    # Berechne Veränderung innerhalb der Kerze (Close - Open)
+    heatmap_df['Hourly_Change'] = ((heatmap_df['Close'] - heatmap_df['Open']) / heatmap_df['Open']) * 100
     
-    return {"P": p, "R1": r1, "S1": s1, "R2": r2, "S2": s2}
+    # Extrahiere Datum und Stunde
+    heatmap_df['Date'] = heatmap_df.index.date
+    heatmap_df['Hour'] = heatmap_df.index.hour
+    
+    # Pivot Tabelle: Zeilen=Datum, Spalten=Stunde, Werte=%Change
+    pivot = heatmap_df.pivot_table(index='Date', columns='Hour', values='Hourly_Change')
+    
+    # Sortiere neuestes Datum nach oben
+    pivot = pivot.sort_index(ascending=False)
+    
+    return pivot
 
 def get_signal_color(value, reference, type="standard"):
-    if pd.isna(value) or pd.isna(reference): return "⚪ N/A"
-    
+    if pd.isna(value) or pd.isna(reference): return "⚪"
     if type == "rsi":
-        if value < 30: return "🟢 BUY (Oversold)"
-        elif value > 70: return "🔴 SELL (Overbought)"
-        else: return "⚪ NEUTRAL"
-    
-    if value > reference: return "🟢 BULLISH"
-    elif value < reference: return "🔴 BEARISH"
-    else: return "⚪ NEUTRAL"
+        if value < 30: return "🟢 BUY"
+        elif value > 70: return "🔴 SELL"
+        else: return "⚪"
+    if value > reference: return "🟢"
+    elif value < reference: return "🔴"
+    else: return "⚪"
 
 # --- SIDEBAR ---
-st.sidebar.header("⚙️ Steuerung")
+st.sidebar.header("⚡ Steuerung")
 auto_refresh = st.sidebar.checkbox("Live Auto-Update (60s)", value=False)
-st.sidebar.markdown("---")
-st.sidebar.caption(f"Update: {datetime.now().strftime('%H:%M:%S')}")
+st.sidebar.info("💡 **Tipp:** Nutze die Heatmap, um zu sehen, zu welcher Uhrzeit die Aktie normalerweise steigt oder fällt.")
 
 if auto_refresh:
     time.sleep(60)
     st.rerun()
 
-if st.sidebar.button("Manuell Refresh"):
+if st.sidebar.button("🔄 Refresh"):
     st.rerun()
 
 # --- HAUPTBEREICH ---
-st.title("🚀 MAG7 & Chips Trading Hub")
+st.title("⚡ MAG7 Time-Analyst V3")
 
-# Tabs erstellen
-tabs = st.tabs(["📊 Gesamtübersicht"] + list(TICKERS.keys()))
+tabs = st.tabs(["📊 Markt & Matrix"] + list(TICKERS.keys()))
 
-# === TAB 0: GESAMTÜBERSICHT ===
+# === TAB 0: ÜBERSICHT ===
 with tabs[0]:
-    st.subheader("Marktstimmung (Live)")
+    st.subheader("Markt-Momentum")
     
-    # 1. Übersichtstabelle
     overview_data = []
+    prices = {}
     
-    # Ladebalken
-    progress = st.progress(0)
-    
-    # Daten für Matrix sammeln
-    all_close_prices = {} 
-
-    for i, (name, sym) in enumerate(TICKERS.items()):
+    for name, sym in TICKERS.items():
         df = get_data(sym)
-        
-        if not df.empty and 'SMA_50' in df.columns:
-            # Für Matrix speichern
-            all_close_prices[name] = df['Close']
-            
-            # Werte für Tabelle
+        if not df.empty:
+            prices[name] = df['Close']
             curr = df['Close'].iloc[-1]
-            prev = df['Close'].iloc[-2]
-            pct = ((curr - prev) / prev) * 100
+            change = ((curr - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
             rsi = df['RSI_14'].iloc[-1] if 'RSI_14' in df.columns else 50
-            sma50 = df['SMA_50'].iloc[-1]
-            
-            trend_icon = "↗️" if curr > sma50 else "↘️"
             
             overview_data.append({
-                "Ticker": name,
+                "Asset": name,
                 "Preis": curr,
-                "Change %": pct,
-                "RSI (1h)": rsi,
-                "Trend": trend_icon
+                "Change %": change,
+                "RSI": rsi,
+                "Volumen-Check": "⚠️ HOCH" if (df['Volume'].iloc[-1] > df['Volume'].mean()*1.5) else "Normal"
             })
-        progress.progress((i + 1) / len(TICKERS))
-    
-    progress.empty()
-    
-    # Tabelle anzeigen
+            
     if overview_data:
-        ov_df = pd.DataFrame(overview_data)
         st.dataframe(
-            ov_df.style.format({"Preis": "{:.2f} $", "Change %": "{:+.2f}%", "RSI (1h)": "{:.1f}"})
+            pd.DataFrame(overview_data).style.format({"Preis": "{:.2f}", "Change %": "{:+.2f}", "RSI": "{:.1f}"})
             .applymap(lambda x: 'color: #00ff00' if x > 0 else 'color: #ff4b4b', subset=['Change %']),
             use_container_width=True
         )
     
     st.markdown("---")
-    
-    # 2. Korrelations-Matrix
-    st.subheader("🔗 Korrelations-Matrix (Heatmap)")
-    st.info("Zeigt, wie stark sich Aktien synchron bewegen (1.0 = Identisch, -1.0 = Gegensätzlich)")
-    
-    if st.button("Matrix berechnen"):
-        if all_close_prices:
-            corr_df = pd.DataFrame(all_close_prices)
-            # Nur gemeinsame Datenpunkte nutzen
-            corr_matrix = corr_df.dropna().corr()
-            
-            st.dataframe(
-                corr_matrix.style.background_gradient(cmap="RdYlGn", axis=None).format("{:.2f}"),
-                use_container_width=True,
-                height=500
-            )
+    st.subheader("🔗 Live Korrelation")
+    if prices:
+        corr = pd.DataFrame(prices).dropna().corr()
+        st.dataframe(corr.style.background_gradient(cmap="RdYlGn", axis=None).format("{:.2f}"), use_container_width=True)
 
 # === TABS: EINZELWERTE ===
 for i, (name, symbol) in enumerate(TICKERS.items()):
     with tabs[i+1]:
         df = get_data(symbol)
-        
-        # Sicherheitscheck
         if df.empty or 'SMA_50' not in df.columns:
-            st.warning("Lade Daten... (oder nicht genügend Historie)")
+            st.warning("Lade Daten...")
             continue
 
-        # Letzte Werte
         curr = df['Close'].iloc[-1]
-        pivots = calculate_pivot_points(df)
+        fibs = calculate_fibonacci(df)
         
-        # Header Stats
+        # --- TOP METRICS ---
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Preis", f"{curr:.2f} $", f"{curr - df['Close'].iloc[-2]:.2f} $")
-        c2.metric("Volumen", f"{df['Volume'].iloc[-1]/1e6:.2f}M")
+        
+        # Volume Anomaly Check
+        avg_vol = df['Volume'].mean()
+        curr_vol = df['Volume'].iloc[-1]
+        vol_state = "🚨 SPIKE!" if curr_vol > avg_vol * 2 else "Normal"
+        c2.metric("Volumen Status", vol_state, f"{(curr_vol/avg_vol)*100:.0f}% vom Avg")
+        
         c3.metric("RSI (1h)", f"{df['RSI_14'].iloc[-1]:.1f}")
+        c4.metric("Fib 0.618 (Golden)", f"{fibs['0.618 (Golden)']:.2f} $")
         
-        # ATR Metrik (Volatilität)
-        atr_val = df['ATRr_14'].iloc[-1] if 'ATRr_14' in df.columns else 0
-        c4.metric("ATR (Range)", f"{atr_val:.2f} $")
-        
+        # --- HEATMAP (Das neue Feature) ---
         st.markdown("---")
+        st.subheader("⏰ Stündliche Performance (Heatmap)")
+        st.caption("Zeigt die prozentuale Veränderung pro Stunde (Grün = Steigend, Rot = Fallend). Suche nach vertikalen Mustern!")
         
-        # --- CHEAT SHEET ---
-        st.subheader(f"🧩 {name} Strategie-Board")
-        cs1, cs2, cs3 = st.columns(3)
+        heatmap_df = get_hourly_heatmap_data(df)
         
-        with cs1:
-            st.markdown("**📈 Trend**")
-            sma20 = df['SMA_20'].iloc[-1] if 'SMA_20' in df.columns else 0
-            sma50 = df['SMA_50'].iloc[-1]
-            sma200 = df['SMA_200'].iloc[-1] if 'SMA_200' in df.columns else 0
-            
-            st.write(f"SMA 20: {sma20:.2f} | {get_signal_color(curr, sma20)}")
-            st.write(f"SMA 50: {sma50:.2f} | {get_signal_color(curr, sma50)}")
-            st.write(f"SMA 200: {sma200:.2f} | {get_signal_color(curr, sma200)}")
+        # Heatmap Darstellung mit Farben
+        st.dataframe(
+            heatmap_df.style
+            .background_gradient(cmap='RdYlGn', vmin=-1.5, vmax=1.5) # Farbskala anpassen
+            .format("{:+.2f}%")
+            .highlight_null(color='grey'),
+            use_container_width=True,
+            height=300
+        )
 
-        with cs2:
-            st.markdown("**🌊 Momentum**")
-            rsi = df['RSI_14'].iloc[-1]
-            macd = df['MACD_12_26_9'].iloc[-1]
-            macd_s = df['MACDs_12_26_9'].iloc[-1]
-            
-            st.write(f"RSI: {rsi:.1f} | {get_signal_color(rsi, 0, 'rsi')}")
-            st.write(f"MACD: {macd:.3f} | {'🟢 Bull' if macd > macd_s else '🔴 Bear'}")
-            st.progress(rsi/100)
-
-        with cs3:
-            st.markdown("**⚡ Profi-Indikatoren**")
-            # VWAP Check
-            vwap_val = df['VWAP_D'].iloc[-1] if 'VWAP_D' in df.columns else 0
-            vwap_col = "🟢 BULLISH" if curr > vwap_val else "🔴 BEARISH"
-            
-            st.write(f"VWAP: {vwap_val:.2f} $ | {vwap_col}")
-            st.write(f"Pivot: {pivots['P']:.2f} $")
-            st.caption(f"Erwartete Range (ATR): +/- {atr_val:.2f}$")
-
-        # --- CHART ---
-        st.subheader("📊 Chart (1h) mit VWAP")
+        # --- CHART MIT FIBONACCI & VWAP ---
+        st.subheader("📊 Chart Analyse")
         
         fig = go.Figure()
         
         # Candles
-        fig.add_trace(go.Candlestick(
-            x=df.index, open=df['Open'], high=df['High'], 
-            low=df['Low'], close=df['Close'], name='Price'
-        ))
+        fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price'))
         
-        # SMAs
-        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='orange', width=1), name='SMA 50'))
-        if 'SMA_200' in df.columns:
-            fig.add_trace(go.Scatter(x=df.index, y=df['SMA_200'], line=dict(color='blue', width=1), name='SMA 200'))
-        
-        # VWAP (Lila Linie)
+        # VWAP & SMAs
         if 'VWAP_D' in df.columns:
             fig.add_trace(go.Scatter(x=df.index, y=df['VWAP_D'], line=dict(color='violet', width=2, dash='dot'), name='VWAP'))
+        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='orange', width=1), name='SMA 50'))
+
+        # Fibonacci Lines (Nur statisch rechts im Chart wäre besser, aber wir zeichnen sie durchgehend)
+        fig.add_hline(y=fibs['0.5 (Mid)'], line_dash="dash", line_color="yellow", annotation_text="Fib 0.5")
+        fig.add_hline(y=fibs['0.618 (Golden)'], line_dash="dash", line_color="green", annotation_text="Fib 0.618")
 
         fig.update_layout(height=500, margin=dict(l=0,r=0,t=0,b=0), template="plotly_dark", xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
-        
-        # --- FAZIT ---
-        score = 0
-        if rsi < 30: score+=1
-        if rsi > 70: score-=1
-        if curr > sma50: score+=1
-        if macd > macd_s: score+=1
-        if vwap_val > 0 and curr > vwap_val: score+=1 # VWAP Bonus
-        
-        sentiment = "HOLD ➡️"
-        if score >= 3: sentiment = "STRONG BUY 🚀"
-        elif score >= 1: sentiment = "BUY ↗️"
-        elif score <= -2: sentiment = "STRONG SELL 📉"
-        elif score <= -1: sentiment = "SELL ↘️"
-        
-        st.info(f"**Algo-Fazit:** {sentiment} (Score: {score})")
+
+        # --- CHEAT SHEET ---
+        with st.expander("🧩 Detailliertes Cheat Sheet & Strategie", expanded=True):
+            sc1, sc2, sc3 = st.columns(3)
+            with sc1:
+                st.markdown("**Trend**")
+                st.write(f"SMA 50: {df['SMA_50'].iloc[-1]:.2f} | {get_signal_color(curr, df['SMA_50'].iloc[-1])}")
+                st.write(f"SMA 200: {df['SMA_200'].iloc[-1]:.2f} | {get_signal_color(curr, df['SMA_200'].iloc[-1])}")
+            with sc2:
+                st.markdown("**Fibonacci Levels**")
+                st.write(f"0.5 Retrace: {fibs['0.5 (Mid)']:.2f} $")
+                st.write(f"0.618 Retrace: {fibs['0.618 (Golden)']:.2f} $")
+            with sc3:
+                st.markdown("**Fazit**")
+                score = 0
+                if df['RSI_14'].iloc[-1] < 30: score += 1
+                if curr > df['SMA_50'].iloc[-1]: score += 1
+                if curr > fibs['0.5 (Mid)']: score += 1
+                
+                sentiment = "HOLD ➡️"
+                if score >= 2: sentiment = "BUY ↗️"
+                if score <= 0: sentiment = "SELL ↘️"
+                st.success(f"Signal: **{sentiment}**")
