@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="MAG7 Pro Analyst V12 (Final Fix)", layout="wide", page_icon="📈")
+st.set_page_config(page_title="MAG7 Pro Analyst V14 (Button Fix)", layout="wide", page_icon="📈")
 
 # --- CSS STYLING ---
 st.markdown("""
@@ -20,6 +20,40 @@ st.markdown("""
     /* Spezielles Styling für den optimierten Footer */
     .footer-box { padding: 10px; border-radius: 5px; margin-bottom: 10px; border: 1px solid #333; }
     .footer-header { font-weight: bold; color: #4CAF50; }
+    
+    /* Style für das kleine Info-Icon */
+    div.stButton > button {
+        height: 100%;
+        padding: 0;
+        margin: 0;
+        line-height: 1;
+        border: none;
+        background-color: transparent;
+        color: gray;
+    }
+    
+    /* Style für die Zeitspannen-Buttons */
+    .time-button-container {
+        display: flex;
+        gap: 5px; /* Abstand zwischen Buttons */
+    }
+    .time-button-container button {
+        padding: 4px 8px; /* Kleinerer Padding */
+        font-size: 0.8rem;
+        background-color: #333333;
+        border: 1px solid #555555;
+        border-radius: 5px;
+        color: white;
+        transition: background-color 0.2s;
+    }
+    .time-button-container button:hover:not(.active) {
+        background-color: #444444;
+    }
+    .time-button-container button.active {
+        background-color: #4CAF50 !important; /* Aktiver Button grün */
+        border-color: #4CAF50 !important;
+        font-weight: bold;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -42,9 +76,23 @@ TOOLTIPS = {
     "S1": "Support 1: Das wichtigste erwartete Preisniveau, bei dem Kaufinteresse den Kursverfall stoppen könnte.",
     "R2": "Resistance 2: Ein sekundäres, höheres Preisniveau, bei dem Verkaufsdruck erwartet wird.",
     "S2": "Support 2: Ein sekundäres, tieferes Preisniveau, bei dem starker Kaufdruck erwartet wird.",
+    "SMA_50": "Simple Moving Average (50): Der gleitende Durchschnitt über die letzten 50 Perioden. Zeigt den mittelfristigen Trend an."
 }
 
-# --- FUNKTIONEN ---
+# --- HILFSFUNKTION FÜR DEN NEUEN TOOLTIP ---
+def display_info_text(label, value, tooltip_key, icon="❓"):
+    """Zeigt Label und Wert nebeneinander und fügt einen klickbaren Tooltip hinzu."""
+    c_val, c_info = st.columns([0.8, 0.2])
+    
+    # Textanzeige (Label und Wert fett)
+    c_val.markdown(f"{label}: **{value}**")
+    
+    # Klickbares Icon, das st.help auslöst
+    if c_info.button(icon, key=f"{label}_{value}"):
+        st.help(TOOLTIPS[tooltip_key])
+
+
+# --- DATENFUNKTIONEN ---
 
 @st.cache_data(ttl=60)
 def get_data(ticker, interval):
@@ -97,7 +145,6 @@ def get_normalized_data(tickers, interval):
                 show_progress=False
             )['Close']
             
-            # Stelle sicher, dass der Abruf erfolgreich war und der Startwert nicht Null ist
             if not df.empty and df.iloc[0] != 0:
                 if df.index.tz is None:
                     df = df.tz_localize('UTC').tz_convert('Europe/Berlin')
@@ -105,7 +152,6 @@ def get_normalized_data(tickers, interval):
         except Exception:
             pass
             
-    # FIX: Verhindert den ValueError bei leerem Dictionary
     if not data:
         return pd.DataFrame()
         
@@ -114,7 +160,6 @@ def get_normalized_data(tickers, interval):
     if df_comp.empty:
         return pd.DataFrame()
         
-    # Normalisierung: Alle Kurse auf den Startpunkt (100) setzen
     normalized = df_comp.div(df_comp.iloc[0]) * 100
     
     return normalized
@@ -207,9 +252,13 @@ if st.sidebar.button("🔄 Refresh Data"):
     st.cache_data.clear()
     st.rerun()
 
+# --- INITIALISIERUNG DES SESSION STATE FÜR RANGE (NEU) ---
+if 'chart_range' not in st.session_state:
+    st.session_state['chart_range'] = '3 Monate'
+
 
 # --- HAUPTBEREICH ---
-st.title(f"💎 MAG7 Trading Dashboard (V12 - {interval} Ansicht)")
+st.title(f"💎 MAG7 Trading Dashboard (V14 - {interval} Ansicht)")
 
 tabs = st.tabs(["🚀 SIGNALS & MARKET"] + TICKER_NAMES)
 
@@ -250,7 +299,6 @@ with tabs[0]:
     
     st.markdown("---")
     
-    # Vergleichs-Chart
     st.subheader("📈 Normalisierte Performance im Vergleich")
     
     selection_col, range_col = st.columns([3, 1])
@@ -313,22 +361,58 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
 
         st.markdown("---")
         
-        # ZEITSPANNEN-AUSWAHL
+        # NEU: ZEITSPANNEN-BUTTONS
         range_options = {
-            "3 Monate": 90, 
-            "1 Monat": 30, 
-            "1 Woche": 7, 
-            "1 Tag": 1
+            "3M": 90, 
+            "1M": 30, 
+            "1W": 7, 
+            "1D": 1
         }
         
-        range_selection = st.selectbox(
-            "Chart-Zeitspanne",
-            list(range_options.keys()),
-            index=0,
-            key=f"range_{symbol}"
-        )
+        # Standardwert setzen
+        if f'range_{symbol}' not in st.session_state:
+            st.session_state[f'range_{symbol}'] = '3M'
+            
+        st.subheader(f"📊 Chart Analyse ({interval})")
         
-        days_to_show = range_options[range_selection]
+        # Buttons in einer Zeile (Container) anzeigen
+        button_cols = st.columns(len(range_options) + 2) # +2 für Abstand
+        
+        selected_range_key = st.session_state[f'range_{symbol}']
+        
+        with button_cols[0]:
+            st.markdown("Zeitspanne:")
+
+        # Buttons erstellen
+        for idx, (label, days) in enumerate(range_options.items()):
+            is_active = (label == selected_range_key)
+            
+            # CSS Klasse für den aktiven Button setzen
+            button_style = "active" if is_active else ""
+            
+            # Button im nächsten Column platzieren
+            with button_cols[idx + 1]:
+                if st.button(label, key=f"btn_{symbol}_{label}"):
+                    st.session_state[f'range_{symbol}'] = label
+                    # Rerun, um das Chart neu zu laden
+                    st.rerun()
+                # Manuelle Anwendung der CSS-Klasse (nicht direkt in st.button möglich)
+                if is_active:
+                     st.markdown(f"""
+                         <script>
+                            var buttons = parent.document.querySelectorAll('[data-testid="stButton"] button');
+                            buttons.forEach(function(btn){{
+                                if (btn.textContent === '{label}' && btn.id.includes('{symbol}')) {{
+                                    btn.classList.add('active');
+                                }}
+                            }});
+                         </script>
+                         """, unsafe_allow_html=True)
+
+
+        st.markdown("---") # Trennung zwischen Buttons und Chart
+        
+        days_to_show = range_options[st.session_state[f'range_{symbol}']]
         
         start_date = df.index[-1].date() - timedelta(days=days_to_show)
         df_display = df[df.index.date >= start_date]
@@ -350,7 +434,7 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         st.markdown("---")
 
         # --- CHART ---
-        st.subheader(f"📊 Chart Analyse ({interval} / {range_selection})")
+        
         fig = go.Figure()
         
         fig.add_trace(go.Candlestick(x=df_display.index, open=df_display['Open'], high=df_display['High'], low=df_display['Low'], close=df_display['Close'], name='Kurs'))
@@ -367,7 +451,7 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
 
         st.markdown("---")
         
-        # --- OPTISCH VERBESSERTER CHEAT SHEET BEREICH ---
+        # --- KORRIGIERTES CHEAT SHEET BEREICH ---
         
         st.header("🎯 Strategie-Cheat Sheet")
         
@@ -395,7 +479,7 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         with col_trend:
             st.markdown(f'<div class="footer-box">', unsafe_allow_html=True)
             st.markdown(f'<div class="footer-header">LANGFR. TREND (SMA)</div>', unsafe_allow_html=True)
-            st.write(f"SMA 50: **{df['SMA_50'].iloc[-1] if 'SMA_50' in df.columns else 'N/A':.2f}**")
+            st.metric("SMA 50", f"{df['SMA_50'].iloc[-1] if 'SMA_50' in df.columns else 'N/A':.2f}", help=TOOLTIPS['SMA_50'])
             st.write(f"Status: {trend_status}")
             st.markdown(f'</div>', unsafe_allow_html=True)
 
@@ -408,17 +492,21 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         with c_pivots:
             st.markdown(f'<div class="footer-box">', unsafe_allow_html=True)
             st.markdown(f'<div class="footer-header">PIVOT PUNKTE (Täglich)</div>', unsafe_allow_html=True)
-            st.write(f"R2 (Widerst.): **{pivots['R2']:.2f}** 🔴", help=TOOLTIPS['R2'])
-            st.write(f"R1 (Widerst.): **{pivots['R1']:.2f}** 🔴", help=TOOLTIPS['R1'])
-            st.write(f"Pivot (P): **{pivots['P']:.2f}**", help=TOOLTIPS['PIVOT_P'])
-            st.write(f"S1 (Unterst.): **{pivots['S1']:.2f}** 🟢", help=TOOLTIPS['S1'])
-            st.write(f"S2 (Unterst.): **{pivots['S2']:.2f}** 🟢", help=TOOLTIPS['S2'])
+            
+            display_info_text("R2 (Widerst.)", f"{pivots['R2']:.2f} 🔴", 'R2', "❓")
+            display_info_text("R1 (Widerst.)", f"{pivots['R1']:.2f} 🔴", 'R1', "❓")
+            display_info_text("Pivot (P)", f"{pivots['P']:.2f}", 'PIVOT_P', "❓")
+            display_info_text("S1 (Unterst.)", f"{pivots['S1']:.2f} 🟢", 'S1', "❓")
+            display_info_text("S2 (Unterst.)", f"{pivots['S2']:.2f} 🟢", 'S2', "❓")
+            
             st.markdown(f'</div>', unsafe_allow_html=True)
 
         with c_fib:
             st.markdown(f'<div class="footer-box">', unsafe_allow_html=True)
             st.markdown(f'<div class="footer-header">FIBONACCI & VWAP</div>', unsafe_allow_html=True)
-            st.write(f"Fib 0.618: **{fibs['0.618']:.2f}**", help=TOOLTIPS['FIB_0618'])
+            
+            display_info_text("Fib 0.618", f"{fibs['0.618']:.2f}", 'FIB_0618', "❓")
+            
             st.write(f"VWAP: **{df['VWAP_D'].iloc[-1] if 'VWAP_D' in df.columns else 'N/A':.2f}**")
             st.write(f"SMA 200: **{df['SMA_200'].iloc[-1] if 'SMA_200' in df.columns else 'N/A':.2f}**")
             st.markdown(f'</div>', unsafe_allow_html=True)
