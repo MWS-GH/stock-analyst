@@ -8,14 +8,13 @@ import time
 from datetime import datetime, timedelta
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="MAG7 Pro Analyst V6", layout="wide", page_icon="📈")
+st.set_page_config(page_title="MAG7 Pro Analyst V7", layout="wide", page_icon="📈")
 
 # --- CSS STYLING ---
 st.markdown("""
 <style>
     .metric-card { background-color: #1e1e1e; padding: 15px; border-radius: 10px; border: 1px solid #333; margin-bottom: 10px; }
     .stDataFrame { font-size: 14px; }
-    /* WICHTIG: Erhöht die Sichtbarkeit der Metriken */
     div[data-testid="stMetricValue"] { font-weight: bold; font-size: 1.2rem; } 
 </style>
 """, unsafe_allow_html=True)
@@ -31,11 +30,17 @@ TICKERS = {
 # --- FUNKTIONEN ---
 
 @st.cache_data(ttl=60)
-def get_data(ticker):
+def get_data(ticker, interval):
     try:
+        # Period muss je nach Intervall angepasst werden, um genug Daten für SMA 200/ADX zu haben
+        if interval == '1d':
+            period = "1y" # 1 Jahr für Tagesdaten
+        else:
+            period = "6mo" # 6 Monate für Stundendaten (für SMA 200)
+
         stock = yf.Ticker(ticker)
-        # prepost=True lädt EHT-Daten
-        df = stock.history(period="6mo", interval="60m", prepost=True) 
+        # prepost=True nur für stündliche Daten relevant
+        df = stock.history(period=period, interval=interval, prepost=(interval != '1d')) 
         
         if df.empty: return pd.DataFrame()
 
@@ -49,6 +54,8 @@ def get_data(ticker):
             df.ta.rsi(length=14, append=True)
             df.ta.macd(append=True)
             df.ta.atr(length=14, append=True)
+            # NEU: ADX (Trendstärke)
+            df.ta.adx(length=14, append=True)
         
         if len(df) > 20: df.ta.sma(length=20, append=True)
         if len(df) > 50: df.ta.sma(length=50, append=True)
@@ -61,11 +68,13 @@ def get_data(ticker):
     except Exception as e:
         return pd.DataFrame()
 
+# ... (Die Funktionen calculate_fibonacci, calculate_pivot_points, get_market_signal bleiben unverändert) ...
+
 def calculate_fibonacci(df):
-    last_month = df.tail(160)
-    if last_month.empty: last_month = df
-    max_p = last_month['High'].max()
-    min_p = last_month['Low'].min()
+    last_window = df.tail(160)
+    if last_window.empty: last_window = df
+    max_p = last_window['High'].max()
+    min_p = last_window['Low'].min()
     diff = max_p - min_p
     return {
         "0.5": max_p - 0.5 * diff,
@@ -73,7 +82,6 @@ def calculate_fibonacci(df):
     }
 
 def calculate_pivot_points(df):
-    # Berechnung basierend auf den Werten des letzten kompletten Tages
     if df.empty or len(df) < 20: return {"P": 0, "R1": 0, "S1": 0, "R2": 0, "S2": 0}
     
     last_day_date = df.index[-2].date() 
@@ -118,14 +126,12 @@ def get_hourly_heatmap_data(df):
     heatmap_df = df.tail(200).copy() 
     heatmap_df['Hourly_Change'] = ((heatmap_df['Close'] - heatmap_df['Open']) / heatmap_df['Open']) * 100
     
-    # FIX: Vereinfachung zu nur 'Datum'
     heatmap_df['Datum'] = heatmap_df.index.strftime("%Y-%m-%d") 
     heatmap_df['Uhrzeit'] = heatmap_df.index.strftime("%H:00")
     
     pivot = heatmap_df.pivot_table(index='Datum', columns='Uhrzeit', values='Hourly_Change')
     pivot = pivot.sort_index(ascending=False)
     
-    # FIX: Filter für 07:00 bis 23:00 Uhr (CET)
     valid_cols = [c for c in pivot.columns if "07:00" <= c <= "23:00"] 
     pivot = pivot[valid_cols]
     
@@ -147,15 +153,23 @@ def analyze_vertical_patterns(pivot):
 
 # --- SIDEBAR ---
 st.sidebar.header("💎 Steuerung")
+interval = st.sidebar.selectbox(
+    "Zeitfenster (Interval)",
+    ('60m', '30m', '1d'),
+    index=0,
+    help="Wechsle zwischen Stunden- und Tagesansicht. Heatmap nur bei Stundenansicht verfügbar."
+)
 auto_refresh = st.sidebar.checkbox("Live Auto-Update (60s)", value=False)
 if auto_refresh:
     time.sleep(60)
     st.rerun()
 if st.sidebar.button("🔄 Refresh Data"):
+    st.cache_data.clear()
     st.rerun()
 
+
 # --- HAUPTBEREICH ---
-st.title("💎 MAG7 Trading Dashboard V6 (S/R Fokus)")
+st.title(f"💎 MAG7 Trading Dashboard (V7 - {interval} Ansicht)")
 
 tabs = st.tabs(["🚀 SIGNALS & MARKET"] + list(TICKERS.keys()))
 
@@ -173,7 +187,7 @@ with tabs[0]:
         return 'color: gray'
 
     for i, (name, sym) in enumerate(TICKERS.items()):
-        df = get_data(sym)
+        df = get_data(sym, interval)
         if not df.empty and len(df) > 20:
             curr = df['Close'].iloc[-1]
             change = ((curr - df['Close'].iloc[-2]) / curr) * 100
@@ -196,10 +210,11 @@ with tabs[0]:
 # === TABS: EINZELWERTE ===
 for i, (name, symbol) in enumerate(TICKERS.items()):
     with tabs[i+1]:
-        df = get_data(symbol)
+        # Daten mit ausgewähltem Interval laden
+        df = get_data(symbol, interval)
         
         if df.empty or len(df) < 20:
-            st.warning("Lade Daten... (Warte auf Marktöffnung oder API)")
+            st.warning("Lade Daten... (Warte auf Marktöffnung, API, oder wähle passendes Intervall)")
             continue
 
         curr = df['Close'].iloc[-1]
@@ -212,25 +227,27 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         c1.metric("Preis (DE Zeit)", f"{curr:.2f}", f"{curr - df['Close'].iloc[-2]:.2f}")
         c2.metric("SIGNAL", signal.replace("💎", "").replace("🔥",""))
         
-        # NEU: S/R Levels oben anzeigen
         c3.metric("Resistance (R1)", f"{pivots['R1']:.2f}")
         c4.metric("Support (S1)", f"{pivots['S1']:.2f}")
 
         st.markdown("---")
         
-        # --- INTELLIGENTE HEATMAP ---
-        st.subheader("⏰ Muster-Erkennung (07:00 - 23:00 Uhr CET)")
-        heatmap_df = get_hourly_heatmap_data(df)
-        
-        if not heatmap_df.empty:
-            patterns = analyze_vertical_patterns(heatmap_df)
-            if patterns:
-                st.info("💡 **Erkannte Muster:** " + " | ".join(patterns))
+        # --- HEATMAP & ADX ---
+        if interval != '1d':
+            st.subheader("⏰ Muster-Erkennung (07:00 - 23:00 Uhr CET)")
+            heatmap_df = get_hourly_heatmap_data(df)
             
-            st.dataframe(heatmap_df.style.background_gradient(cmap='RdYlGn', vmin=-1.0, vmax=1.0).format("{:+.2f}%").highlight_null(color='#1e1e1e'), use_container_width=True, height=350)
-
+            if not heatmap_df.empty:
+                patterns = analyze_vertical_patterns(heatmap_df)
+                if patterns:
+                    st.info("💡 **Erkannte Muster:** " + " | ".join(patterns))
+                
+                st.dataframe(heatmap_df.style.background_gradient(cmap='RdYlGn', vmin=-1.0, vmax=1.0).format("{:+.2f}%").highlight_null(color='#1e1e1e'), use_container_width=True, height=350)
+        else:
+            st.info("Heatmap ist nur für Stunden-Intervalle (30m / 60m) verfügbar.")
+        
         # --- CHART ---
-        st.subheader("📊 Chart Analyse")
+        st.subheader(f"📊 Chart Analyse ({interval})")
         fig = go.Figure()
         
         fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Kurs'))
@@ -246,21 +263,26 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         st.plotly_chart(fig, use_container_width=True)
 
         # --- CHEAT SHEET (Detailliert) ---
-        with st.expander("🎯 Alle S/R-Levels & Strategie-Details", expanded=False):
+        with st.expander("🎯 S/R-Levels & Strategie-Details", expanded=False):
             s1, s2, s3 = st.columns(3)
             with s1:
-                st.markdown("**WIDERSTAND (R)**")
-                st.write(f"R2: **{pivots['R2']:.2f}** 🔴")
-                st.write(f"R1: **{pivots['R1']:.2f}** 🔴 (WICHTIG)")
-                st.write(f"Pivot (P): **{pivots['P']:.2f}**")
-            with s2:
-                st.markdown("**UNTERSTÜTZUNG (S)**")
-                st.write(f"S1: **{pivots['S1']:.2f}** 🟢 (WICHTIG)")
-                st.write(f"S2: **{pivots['S2']:.2f}** 🟢")
+                st.markdown("**TRENDSTÄRKE (ADX)**")
+                adx_val = df['ADX_14'].iloc[-1] if 'ADX_14' in df.columns else 0
+                adx_status = "Starker Trend" if adx_val >= 25 else "Schwacher/Seitwärtstrend"
+                st.write(f"ADX: **{adx_val:.2f}**")
+                st.write(f"Status: *{adx_status}*")
                 st.markdown("---")
-                st.markdown("**Fibonacci**")
+                st.write(f"**RSI:** {rsi_val:.2f}")
+
+            with s2:
+                st.markdown("**WIDERSTAND/SUPPORT**")
+                st.write(f"R2: **{pivots['R2']:.2f}** 🔴")
+                st.write(f"S2: **{pivots['S2']:.2f}** 🟢")
+                st.write(f"Pivot (P): **{pivots['P']:.2f}**")
                 st.write(f"Fib 0.618: {fibs['0.618']:.2f}")
+
             with s3:
-                st.markdown("**Fazit**")
-                st.write(f"**Trend (SMA50):** {'🟢 Bullish' if curr > df['SMA_50'].iloc[-1] else '🔴 Bearish'}")
-                st.write(f"**VWAP:** {df['VWAP_D'].iloc[-1] if 'VWAP_D' in df.columns else 'N/A'}")
+                st.markdown("**GLEITENDE DURCHSCHNITTE**")
+                st.write(f"SMA 50: **{df['SMA_50'].iloc[-1] if 'SMA_50' in df.columns else 'N/A':.2f}**")
+                st.write(f"SMA 200: **{df['SMA_200'].iloc[-1] if 'SMA_200' in df.columns else 'N/A':.2f}**")
+                st.write(f"VWAP: {df['VWAP_D'].iloc[-1] if 'VWAP_D' in df.columns else 'N/A'}")
