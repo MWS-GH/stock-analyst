@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 import plotly.graph_objects as go
+import matplotlib.pyplot as plt  # <--- Wichtig für die Heatmap-Farben
 import time
 from datetime import datetime, timedelta
 
@@ -152,15 +153,20 @@ with tabs[0]:
     st.markdown("---")
     st.subheader("🔗 Live Korrelation")
     if prices:
-        corr = pd.DataFrame(prices).dropna().corr()
-        st.dataframe(corr.style.background_gradient(cmap="RdYlGn", axis=None).format("{:.2f}"), use_container_width=True)
+        # Checken ob genügend Daten für Korrelation da sind
+        df_corr = pd.DataFrame(prices).dropna()
+        if not df_corr.empty:
+            corr = df_corr.corr()
+            st.dataframe(corr.style.background_gradient(cmap="RdYlGn", axis=None).format("{:.2f}"), use_container_width=True)
+        else:
+            st.warning("Nicht genügend gemeinsame Datenpunkte für Korrelation.")
 
 # === TABS: EINZELWERTE ===
 for i, (name, symbol) in enumerate(TICKERS.items()):
     with tabs[i+1]:
         df = get_data(symbol)
         if df.empty or 'SMA_50' not in df.columns:
-            st.warning("Lade Daten...")
+            st.warning("Lade Daten... (oder Markt geschlossen/keine Daten)")
             continue
 
         curr = df['Close'].iloc[-1]
@@ -186,15 +192,15 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         
         heatmap_df = get_hourly_heatmap_data(df)
         
-        # Heatmap Darstellung mit Farben
-        st.dataframe(
-            heatmap_df.style
-            .background_gradient(cmap='RdYlGn', vmin=-1.5, vmax=1.5) # Farbskala anpassen
-            .format("{:+.2f}%")
-            .highlight_null(color='grey'),
-            use_container_width=True,
-            height=300
-        )
+        if not heatmap_df.empty:
+            st.dataframe(
+                heatmap_df.style
+                .background_gradient(cmap='RdYlGn', vmin=-1.0, vmax=1.0) # Farbskala angepasst
+                .format("{:+.2f}%")
+                .highlight_null(color='grey'),
+                use_container_width=True,
+                height=300
+            )
 
         # --- CHART MIT FIBONACCI & VWAP ---
         st.subheader("📊 Chart Analyse")
@@ -209,7 +215,7 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
             fig.add_trace(go.Scatter(x=df.index, y=df['VWAP_D'], line=dict(color='violet', width=2, dash='dot'), name='VWAP'))
         fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='orange', width=1), name='SMA 50'))
 
-        # Fibonacci Lines (Nur statisch rechts im Chart wäre besser, aber wir zeichnen sie durchgehend)
+        # Fibonacci Lines
         fig.add_hline(y=fibs['0.5 (Mid)'], line_dash="dash", line_color="yellow", annotation_text="Fib 0.5")
         fig.add_hline(y=fibs['0.618 (Golden)'], line_dash="dash", line_color="green", annotation_text="Fib 0.618")
 
