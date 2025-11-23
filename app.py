@@ -2,163 +2,272 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
-import datetime
+import plotly.graph_objects as go
+import time
+from datetime import datetime, timedelta
 
-# --- Konfiguration ---
-st.set_page_config(page_title="MAG7 & AMD Analyst", layout="wide")
+# --- PAGE CONFIG ---
+st.set_page_config(page_title="MAG7 & AMD Live Hub", layout="wide", page_icon="📈")
 
-# Ticker Liste
+# --- CSS STYLING (Für den Barchart-Look) ---
+st.markdown("""
+<style>
+    .metric-card {
+        background-color: #1e1e1e;
+        padding: 15px;
+        border-radius: 10px;
+        border: 1px solid #333;
+        margin-bottom: 10px;
+    }
+    .bullish { color: #00ff00; font-weight: bold; }
+    .bearish { color: #ff4b4b; font-weight: bold; }
+    .neutral { color: #888888; }
+    .big-font { font-size: 20px !important; }
+</style>
+""", unsafe_allow_html=True)
+
+# --- TICKER LISTE ---
 TICKERS = {
-    "AMD": "AMD",
-    "NVIDIA": "NVDA",
-    "Apple": "AAPL",
-    "Microsoft": "MSFT",
-    "Google": "GOOG",
-    "Amazon": "AMZN",
-    "Meta": "META",
-    "Tesla": "TSLA",
-    "S&P 500": "^GSPC",
-    "Nasdaq": "^IXIC",
-    "VIX": "^VIX"
+    "AMD": "AMD", "NVIDIA": "NVDA", "Apple": "AAPL", 
+    "Microsoft": "MSFT", "Google": "GOOG", "Amazon": "AMZN", 
+    "Meta": "META", "Tesla": "TSLA", "S&P 500": "^GSPC", 
+    "Nasdaq": "^IXIC", "VIX": "^VIX"
 }
 
-# --- Funktionen ---
+# --- FUNKTIONEN ---
 
-def get_data(ticker_symbol):
-    # Holt Daten der letzten 7 Tage im 1-Stunden-Intervall
-    # (reicht für 'letzte 2 Wochen' Ansicht, yfinance limitiert 1h oft auf 730 Tage, aber 1mo ist sicher)
-    data = yf.download(ticker_symbol, period="1mo", interval="1h", progress=False)
+# Cache für 1 Minute, damit es schnell bleibt, aber aktuell ist
+@st.cache_data(ttl=60)
+def get_data(ticker):
+    # Holt Daten: 5 Tage Intraday (für genaue Indikatoren) + Heute
+    # 60m Intervall ist gut für "Stündliche" Analyse
+    df = yf.download(ticker, period="5d", interval="60m", progress=False)
     
-    # Bereinigung für Multi-Index Spalten (Problem bei neueren yfinance Versionen)
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
+    # MultiIndex Bereinigung
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
     
-    return data
+    # Indikatoren berechnen (pandas_ta)
+    df.ta.rsi(length=14, append=True)
+    df.ta.macd(append=True)
+    df.ta.sma(length=20, append=True)
+    df.ta.sma(length=50, append=True)
+    df.ta.sma(length=200, append=True)
+    df.ta.bbands(length=20, std=2, append=True) # Bollinger Bands
+    
+    return df
 
-def calculate_cheat_sheet(df):
-    # Wir nehmen die letzte abgeschlossene Kerze für die Berechnung
-    last_close = df.iloc[-1]['Close']
+def calculate_pivot_points(df):
+    # Pivot Points basieren normalerweise auf dem VORTAG (High/Low/Close)
+    # Wir suchen den letzten kompletten Tag
+    last_day = df.index[-1].date()
+    # Daten filtern (Achtung: Intraday Daten haben Datum+Uhrzeit im Index)
+    # Vereinfacht: Wir nehmen die letzten 8 Kerzen (ca. 1 Handelstag)
+    recent_data = df.tail(8)
     
-    # 1. Moving Averages
-    sma20 = df.ta.sma(length=20).iloc[-1]
-    sma50 = df.ta.sma(length=50).iloc[-1]
-    sma200 = df.ta.sma(length=200).iloc[-1]
+    high = recent_data['High'].max()
+    low = recent_data['Low'].min()
+    close = recent_data['Close'].iloc[-1]
     
-    # 2. Indikatoren
-    rsi = df.ta.rsi(length=14).iloc[-1]
-    macd = df.ta.macd()
-    macd_val = macd['MACD_12_26_9'].iloc[-1]
-    macd_signal = macd['MACDs_12_26_9'].iloc[-1]
-    
-    # 3. Pivot Points (Fibonacci oder Classic) - Basis: Letzter voller Tag
-    # Da wir im 1h Chart sind, approximieren wir Pivot Points basierend auf den High/Lows der letzten 24h
-    last_24h = df.tail(8) # ca. ein Handelstag
-    high = last_24h['High'].max()
-    low = last_24h['Low'].min()
-    close = last_24h['Close'].iloc[-1]
     pivot = (high + low + close) / 3
     r1 = (2 * pivot) - low
     s1 = (2 * pivot) - high
+    r2 = pivot + (high - low)
+    s2 = pivot - (high - low)
     
-    return {
-        "Price": last_close,
-        "RSI": rsi,
-        "MACD": "Bullish" if macd_val > macd_signal else "Bearish",
-        "SMA20": sma20,
-        "SMA50": sma50,
-        "SMA200": sma200,
-        "Pivot": pivot,
-        "R1": r1,
-        "S1": s1,
-        "Trend": "Steigend" if last_close > sma50 else "Fallend"
-    }
+    return {"P": pivot, "R1": r1, "S1": s1, "R2": r2, "S2": s2}
 
-def predict_next_hour(metrics):
-    # Einfache Logik für die "Nächste Stunde" Einschätzung
-    score = 0
-    if metrics['RSI'] < 30: score += 1 # Überverkauft -> könnte steigen
-    if metrics['RSI'] > 70: score -= 1 # Überkauft -> könnte fallen
-    if metrics['MACD'] == "Bullish": score += 1
-    if metrics['Trend'] == "Steigend": score += 1
-    if metrics['Price'] > metrics['Pivot']: score += 0.5
+def get_signal_color(value, reference, type="standard"):
+    # Helper für Farben
+    if type == "rsi":
+        if value < 30: return "🟢 BUY (Oversold)"
+        elif value > 70: return "🔴 SELL (Overbought)"
+        else: return "⚪ NEUTRAL"
     
-    if score >= 2: return "STARK STEIGEND 🚀"
-    elif score >= 1: return "LEICHT STEIGEND ↗️"
-    elif score <= -2: return "STARK FALLEND 📉"
-    elif score <= -1: return "LEICHT FALLEND ↘️"
-    else: return "NEUTRAL ➡️"
+    if value > reference: return "🟢 BULLISH"
+    elif value < reference: return "🔴 BEARISH"
+    else: return "⚪ NEUTRAL"
 
-# --- Main App ---
+# --- SIDEBAR (Auto-Refresh Steuerung) ---
+st.sidebar.header("⚙️ Einstellungen")
+auto_refresh = st.sidebar.checkbox("Live Auto-Update (60s)", value=False)
 
-st.title("📊 MAG7 & AMD Master-Analyst")
+if auto_refresh:
+    time.sleep(60)
+    st.rerun()
 
-# Sidebar Auswahl
-selected_ticker_name = st.sidebar.selectbox("Wähle Asset", list(TICKERS.keys()))
-symbol = TICKERS[selected_ticker_name]
+if st.sidebar.button("Manuell Aktualisieren"):
+    st.rerun()
 
-if st.sidebar.button("Daten abrufen / Aktualisieren"):
-    with st.spinner(f'Lade Daten für {selected_ticker_name}...'):
-        try:
-            df = get_data(symbol)
-            
-            # Aktueller Status
-            current_price = df['Close'].iloc[-1]
-            prev_price = df['Close'].iloc[-2]
-            delta = current_price - prev_price
-            
-            # Metriken berechnen
-            metrics = calculate_cheat_sheet(df)
-            prediction = predict_next_hour(metrics)
-            
-            # --- OBERER BEREICH: Übersicht & Prognose ---
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Aktueller Preis", f"{current_price:.2f} $", f"{delta:.2f} $")
-            col2.metric("Trend (SMA50)", metrics['Trend'])
-            col3.info(f"Prognose nächste Stunde:\n\n**{prediction}**")
-            
-            st.markdown("---")
-            
-            # --- CHEAT SHEET BEREICH ---
-            st.subheader(f"🧩 {selected_ticker_name} Cheat Sheet")
-            
-            cs_col1, cs_col2, cs_col3 = st.columns(3)
-            
-            with cs_col1:
-                st.markdown("**Gleitende Durchschnitte**")
-                st.write(f"SMA 20: {metrics['SMA20']:.2f} $")
-                st.write(f"SMA 50: {metrics['SMA50']:.2f} $")
-                st.write(f"SMA 200: {metrics['SMA200']:.2f} $")
-                
-            with cs_col2:
-                st.markdown("**Technische Indikatoren**")
-                st.write(f"RSI (14): {metrics['RSI']:.2f}")
-                st.write(f"MACD: {metrics['MACD']}")
-                
-            with cs_col3:
-                st.markdown("**Support & Resistance (Pivot)**")
-                st.write(f"Res 1: {metrics['R1']:.2f} $")
-                st.write(f"Pivot: {metrics['Pivot']:.2f} $")
-                st.write(f"Sup 1: {metrics['S1']:.2f} $")
-            
-            # Signal Interpretation Visualisierung
-            st.progress((metrics['RSI']) / 100, text=f"RSI Stärke: {metrics['RSI']:.0f}/100")
+st.sidebar.markdown(f"Letztes Update: {datetime.now().strftime('%H:%M:%S')}")
 
-            st.markdown("---")
+# --- HAUPTBEREICH ---
 
-            # --- HISTORISCHE DATEN (Jede Stunde) ---
-            st.subheader("📅 Historie: Jede Stunde (Letzte 2 Wochen)")
-            
-            # Daten für Chart aufbereiten (letzte 14 Tage)
-            last_2_weeks = df.tail(14 * 10) # Grob geschätzt Handelsstunden
-            
-            st.line_chart(last_2_weeks['Close'])
-            
-            # Detaillierte Tabelle anzeigen (neueste zuerst)
-            with st.expander("Detaillierte Datentabelle ansehen"):
-                display_df = last_2_weeks[['Open', 'High', 'Low', 'Close', 'Volume']].sort_index(ascending=False)
-                st.dataframe(display_df.style.format("{:.2f}"))
+st.title("🚀 Live Trading Hub: MAG7 & Chips")
 
-        except Exception as e:
-            st.error(f"Fehler beim Abruf: {e}")
-else:
-    st.info("Klicke links auf 'Daten abrufen', um die Analyse zu starten.")
+# Reiter erstellen
+tabs_labels = ["📊 Gesamtübersicht"] + list(TICKERS.keys())
+tabs = st.tabs(tabs_labels)
+
+# --- TAB 1: GESAMTÜBERSICHT ---
+with tabs[0]:
+    st.subheader("Marktstimmung auf einen Blick")
+    
+    overview_data = []
+    
+    # Ladebalken für UX
+    progress_bar = st.progress(0)
+    total_tickers = len(TICKERS)
+    
+    for i, (name, sym) in enumerate(TICKERS.items()):
+        df = get_data(sym)
+        if not df.empty:
+            curr = df['Close'].iloc[-1]
+            prev = df['Close'].iloc[-2]
+            pct_change = ((curr - prev) / prev) * 100
+            rsi = df['RSI_14'].iloc[-1]
+            trend = "↗️" if curr > df['SMA_50'].iloc[-1] else "↘️"
+            
+            overview_data.append({
+                "Name": name,
+                "Kurs ($)": f"{curr:.2f}",
+                "Change (%)": pct_change, # Als Zahl lassen für Färbung
+                "RSI (1h)": f"{rsi:.1f}",
+                "Trend (SMA50)": trend
+            })
+        progress_bar.progress((i + 1) / total_tickers)
+    
+    progress_bar.empty()
+    
+    # DataFrame Styling
+    overview_df = pd.DataFrame(overview_data)
+    
+    def color_change(val):
+        color = '#00ff00' if val > 0 else '#ff4b4b' if val < 0 else 'white'
+        return f'color: {color}'
+
+    st.dataframe(
+        overview_df.style.applymap(color_change, subset=['Change (%)'])
+                         .format({'Change (%)': "{:+.2f}%"}),
+        use_container_width=True,
+        height=500
+    )
+
+# --- TABS FÜR EINZELAKTIEN ---
+# Wir iterieren durch die restlichen Tabs (Index 1 bis Ende)
+for i, (name, symbol) in enumerate(TICKERS.items()):
+    with tabs[i+1]:
+        # Daten holen (schon gecached)
+        df = get_data(symbol)
+        
+        if df.empty:
+            st.error("Keine Daten verfügbar.")
+            continue
+
+        # Letzte Werte
+        current_price = df['Close'].iloc[-1]
+        pivots = calculate_pivot_points(df)
+        
+        # Layout: Header mit Metriken
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Preis", f"{current_price:.2f} $", f"{(current_price - df['Close'].iloc[-2]):.2f} $")
+        m2.metric("High (24h)", f"{df.tail(8)['High'].max():.2f} $")
+        m3.metric("Low (24h)", f"{df.tail(8)['Low'].min():.2f} $")
+        m4.metric("Volumen", f"{df['Volume'].iloc[-1] / 1e6:.1f}M")
+        
+        st.markdown("---")
+        
+        # --- CHEAT SHEET SEKTION ---
+        st.subheader(f"🧩 {name} Cheat Sheet")
+        
+        c1, c2, c3 = st.columns(3)
+        
+        # Spalte 1: Moving Averages & Trend
+        with c1:
+            st.markdown("### 📈 Trend Indikatoren")
+            sma20 = df['SMA_20'].iloc[-1]
+            sma50 = df['SMA_50'].iloc[-1]
+            sma200 = df['SMA_200'].iloc[-1]
+            
+            st.markdown(f"""
+            | Indikator | Wert | Signal |
+            | :--- | :--- | :--- |
+            | **SMA 20** | {sma20:.2f} | {get_signal_color(current_price, sma20)} |
+            | **SMA 50** | {sma50:.2f} | {get_signal_color(current_price, sma50)} |
+            | **SMA 200** | {sma200:.2f} | {get_signal_color(current_price, sma200)} |
+            """)
+            
+        # Spalte 2: Oszillatoren
+        with c2:
+            st.markdown("### 🌊 Momentum / Stärke")
+            rsi = df['RSI_14'].iloc[-1]
+            macd = df['MACD_12_26_9'].iloc[-1]
+            macd_s = df['MACDs_12_26_9'].iloc[-1]
+            
+            macd_signal = "🟢 BULLISH" if macd > macd_s else "🔴 BEARISH"
+            
+            st.markdown(f"""
+            | Indikator | Wert | Status |
+            | :--- | :--- | :--- |
+            | **RSI (14)** | {rsi:.1f} | {get_signal_color(rsi, 0, 'rsi')} |
+            | **MACD** | {macd:.3f} | {macd_signal} |
+            """)
+            
+            st.progress(rsi/100, text="RSI Meter")
+
+        # Spalte 3: Support & Resistance (Pivot)
+        with c3:
+            st.markdown("### 🧱 Support & Resistance")
+            st.markdown(f"""
+            | Level | Preis |
+            | :--- | :--- |
+            | **Res 2** | {pivots['R2']:.2f} $ |
+            | **Res 1** | {pivots['R1']:.2f} $ |
+            | **PIVOT** | **{pivots['P']:.2f} $** |
+            | **Sup 1** | {pivots['S1']:.2f} $ |
+            | **Sup 2** | {pivots['S2']:.2f} $ |
+            """)
+
+        st.markdown("---")
+        
+        # --- CHART SEKTION (Plotly) ---
+        st.subheader("📊 Interaktiver Chart (1h Kerzen)")
+        
+        fig = go.Figure()
+        
+        # Candlestick
+        fig.add_trace(go.Candlestick(
+            x=df.index,
+            open=df['Open'], high=df['High'],
+            low=df['Low'], close=df['Close'],
+            name='Preis'
+        ))
+        
+        # SMA Linien hinzufügen
+        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='orange', width=1), name='SMA 50'))
+        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_200'], line=dict(color='blue', width=1), name='SMA 200'))
+
+        fig.update_layout(
+            height=500, 
+            xaxis_rangeslider_visible=False,
+            template="plotly_dark",
+            margin=dict(l=0, r=0, t=0, b=0)
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # --- ANALYSE FAZIT ---
+        score = 0
+        if rsi < 30: score += 1
+        if rsi > 70: score -= 1
+        if current_price > sma50: score += 1
+        if current_price > pivots['P']: score += 1
+        if macd > macd_s: score += 1
+        
+        if score >= 2: sentiment = "STRONG BUY 🚀"
+        elif score >= 1: sentiment = "BUY ↗️"
+        elif score <= -2: sentiment = "STRONG SELL 📉"
+        elif score <= -1: sentiment = "SELL ↘️"
+        else: sentiment = "HOLD ➡️"
+        
+        st.info(f"**Algorithmus Fazit für die nächste Stunde:** {sentiment} (Score: {score})")
