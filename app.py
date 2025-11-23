@@ -86,23 +86,27 @@ def get_normalized_data(tickers, interval):
     if not tickers:
         return pd.DataFrame()
     
-    # Da wir Vergleiche brauchen, ist es einfacher, alle Daten neu zu holen,
-    # da die Cache-Daten ggf. unterschiedliche Startpunkte haben.
     data = {}
     
     # Für den Vergleich nehmen wir immer die Schlusskurse der letzten 3 Monate
-    # (3 Monate Period ist stabil für 60m und 1d Intervalle)
     for symbol in tickers:
         try:
+            # yf.download gibt ein MultiIndex DataFrame zurück; wir wählen 'Close'
             df = yf.download(symbol, period="3mo", interval=interval, prepost=(interval != '1d'))['Close']
             if not df.empty:
+                # WICHTIG: Die Zeitachse in die Zeitzone des Dashboards konvertieren
+                if df.index.tz is None:
+                    df = df.tz_localize('UTC').tz_convert('Europe/Berlin')
                 data[symbol] = df
         except Exception:
+            # Fehler beim Abruf eines einzelnen Tickers ignorieren
             pass
-
+            
+    # NEUE PRÜFUNG: Wenn keine Daten für irgendeinen Ticker erfolgreich abgerufen wurden, 
+    # MUSS ein leerer DataFrame zurückgegeben werden, um den ValueError zu vermeiden.
     if not data:
         return pd.DataFrame()
-
+        
     df_comp = pd.DataFrame(data).dropna()
     
     if df_comp.empty:
