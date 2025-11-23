@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="MAG7 Pro Analyst V10 (Time & Comp)", layout="wide", page_icon="📈")
+st.set_page_config(page_title="MAG7 Pro Analyst V12 (Final Fix)", layout="wide", page_icon="📈")
 
 # --- CSS STYLING ---
 st.markdown("""
@@ -17,7 +17,7 @@ st.markdown("""
     .stDataFrame { font-size: 14px; }
     div[data-testid="stMetricValue"] { font-weight: bold; font-size: 1.2rem; } 
 
-    /* Spezielles Styling für den neuen Footer */
+    /* Spezielles Styling für den optimierten Footer */
     .footer-box { padding: 10px; border-radius: 5px; margin-bottom: 10px; border: 1px solid #333; }
     .footer-header { font-weight: bold; color: #4CAF50; }
 </style>
@@ -33,7 +33,7 @@ TICKERS = {
 TICKER_SYMBOLS = list(TICKERS.values())
 TICKER_NAMES = list(TICKERS.keys())
 
-# --- TOOLTIP TEXTE (unverändert) ---
+# --- TOOLTIP TEXTE ---
 TOOLTIPS = {
     "ADX": "Average Directional Index: Misst die STÄRKE eines Trends. Werte über 25 zeigen einen klaren, verlässlichen Trend an (unabhängig von der Richtung).",
     "FIB_0618": "Fibonacci Golden Retracement: Ein psychologisch wichtiges Level (61.8%), oft die stärkste S/R-Linie nach einer großen Bewegung.",
@@ -48,7 +48,6 @@ TOOLTIPS = {
 
 @st.cache_data(ttl=60)
 def get_data(ticker, interval):
-    # Logik wie in V9 (Daten holen und Indikatoren berechnen)
     try:
         if interval == '1d':
             period = "1y"
@@ -88,22 +87,25 @@ def get_normalized_data(tickers, interval):
     
     data = {}
     
-    # Für den Vergleich nehmen wir immer die Schlusskurse der letzten 3 Monate
     for symbol in tickers:
         try:
-            # yf.download gibt ein MultiIndex DataFrame zurück; wir wählen 'Close'
-            df = yf.download(symbol, period="3mo", interval=interval, prepost=(interval != '1d'))['Close']
-            if not df.empty:
-                # WICHTIG: Die Zeitachse in die Zeitzone des Dashboards konvertieren
+            df = yf.download(
+                symbol, 
+                period="3mo", 
+                interval=interval, 
+                prepost=(interval != '1d'), 
+                show_progress=False
+            )['Close']
+            
+            # Stelle sicher, dass der Abruf erfolgreich war und der Startwert nicht Null ist
+            if not df.empty and df.iloc[0] != 0:
                 if df.index.tz is None:
                     df = df.tz_localize('UTC').tz_convert('Europe/Berlin')
                 data[symbol] = df
         except Exception:
-            # Fehler beim Abruf eines einzelnen Tickers ignorieren
             pass
             
-    # NEUE PRÜFUNG: Wenn keine Daten für irgendeinen Ticker erfolgreich abgerufen wurden, 
-    # MUSS ein leerer DataFrame zurückgegeben werden, um den ValueError zu vermeiden.
+    # FIX: Verhindert den ValueError bei leerem Dictionary
     if not data:
         return pd.DataFrame()
         
@@ -113,13 +115,11 @@ def get_normalized_data(tickers, interval):
         return pd.DataFrame()
         
     # Normalisierung: Alle Kurse auf den Startpunkt (100) setzen
-    # loc[0] ist der erste Kurs, der verwendet wird
     normalized = df_comp.div(df_comp.iloc[0]) * 100
     
     return normalized
 
 def calculate_fibonacci(df):
-    # Unverändert
     last_window = df.tail(160)
     if last_window.empty: last_window = df
     max_p = last_window['High'].max()
@@ -131,7 +131,6 @@ def calculate_fibonacci(df):
     }
 
 def calculate_pivot_points(df):
-    # Unverändert
     if df.empty or len(df) < 20: return {"P": 0, "R1": 0, "S1": 0, "R2": 0, "S2": 0}
     try:
         last_day_date = df.index[-2].date() 
@@ -150,7 +149,6 @@ def calculate_pivot_points(df):
     return {"P": p, "R1": r1, "S1": s1, "R2": r2, "S2": s2}
 
 def get_market_signal(df, curr):
-    # Unverändert
     score = 0
     if 'RSI_14' in df.columns:
         if df['RSI_14'].iloc[-1] < 30: score += 2 
@@ -168,7 +166,6 @@ def get_market_signal(df, curr):
     return "🟡 WAIT"
 
 def get_hourly_heatmap_data(df):
-    # Unverändert
     if df.index.inferred_freq in ['1d', 'D']:
          return pd.DataFrame()
     heatmap_df = df.tail(200).copy() 
@@ -182,7 +179,6 @@ def get_hourly_heatmap_data(df):
     return pivot
 
 def analyze_vertical_patterns(pivot):
-    # Unverändert
     hints = []
     for col in pivot.columns:
         col_data = pivot[col].dropna()
@@ -213,14 +209,14 @@ if st.sidebar.button("🔄 Refresh Data"):
 
 
 # --- HAUPTBEREICH ---
-st.title(f"💎 MAG7 Trading Dashboard (V10 - {interval} Ansicht)")
+st.title(f"💎 MAG7 Trading Dashboard (V12 - {interval} Ansicht)")
 
 tabs = st.tabs(["🚀 SIGNALS & MARKET"] + TICKER_NAMES)
 
 # === TAB 0: SIGNAL ÜBERSICHT & VERGLEICH ===
 with tabs[0]:
     st.subheader("Aktuelle Trading Signale (Live)")
-    # (Unveränderte Code-Logik für die Signal-Tabelle)
+    
     overview_data = []
     prog = st.progress(0)
     
@@ -254,10 +250,9 @@ with tabs[0]:
     
     st.markdown("---")
     
-    # NEU: Vergleichs-Chart
+    # Vergleichs-Chart
     st.subheader("📈 Normalisierte Performance im Vergleich")
     
-    # Checkboxen zur Auswahl der Assets
     selection_col, range_col = st.columns([3, 1])
     
     with selection_col:
@@ -267,7 +262,6 @@ with tabs[0]:
             default=["NVIDIA", "Microsoft", "Nasdaq"]
         )
     
-    # Mapping der Namen zu Symbolen
     selected_symbols = [TICKERS[name] for name in selected_names if name in TICKERS]
     
     if selected_symbols:
@@ -276,13 +270,11 @@ with tabs[0]:
         if not comp_df.empty:
             fig_comp = go.Figure()
             
-            # Alle Linien hinzufügen
             for symbol in selected_symbols:
                 name = [k for k, v in TICKERS.items() if v == symbol][0]
                 if symbol in comp_df.columns:
                     fig_comp.add_trace(go.Scatter(x=comp_df.index, y=comp_df[symbol], mode='lines', name=name))
             
-            # Layout anpassen
             fig_comp.update_layout(
                 title='Normalisierte Performance (Start = 100)',
                 yaxis_title='Performance (%)',
@@ -292,7 +284,7 @@ with tabs[0]:
             )
             st.plotly_chart(fig_comp, use_container_width=True)
         else:
-            st.warning("Keine vergleichbaren Daten für die ausgewählten Assets oder das gewählte Intervall verfügbar.")
+            st.warning("Keine vergleichbaren Daten für die ausgewählten Assets oder das gewählte Intervall verfügbar. (Prüfe die Tickerauswahl und das Intervall)")
     else:
         st.info("Bitte wähle mindestens ein Asset für den Vergleich aus.")
 
@@ -321,7 +313,7 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
 
         st.markdown("---")
         
-        # NEU: ZEITSPANNEN-AUSWAHL
+        # ZEITSPANNEN-AUSWAHL
         range_options = {
             "3 Monate": 90, 
             "1 Monat": 30, 
@@ -333,20 +325,17 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
             "Chart-Zeitspanne",
             list(range_options.keys()),
             index=0,
-            key=f"range_{symbol}" # Eindeutiger Key für Streamlit
+            key=f"range_{symbol}"
         )
         
         days_to_show = range_options[range_selection]
         
-        # Daten für den Chart filtern
         start_date = df.index[-1].date() - timedelta(days=days_to_show)
         df_display = df[df.index.date >= start_date]
 
         # --- HEATMAP ---
         if interval != '1d':
             st.subheader("⏰ Muster-Erkennung (07:00 - 23:00 Uhr CET)")
-            # Hinweis: Die Heatmap nutzt die vollen 200 Bars, unabhängig von der Range-Auswahl, 
-            # um historische Muster zu finden.
             heatmap_df = get_hourly_heatmap_data(df)
             
             if not heatmap_df.empty:
@@ -364,7 +353,6 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         st.subheader(f"📊 Chart Analyse ({interval} / {range_selection})")
         fig = go.Figure()
         
-        # Chart mit den gefilterten Daten erstellen
         fig.add_trace(go.Candlestick(x=df_display.index, open=df_display['Open'], high=df_display['High'], low=df_display['Low'], close=df_display['Close'], name='Kurs'))
         
         if 'VWAP_D' in df_display.columns:
@@ -379,7 +367,7 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
 
         st.markdown("---")
         
-        # --- OPTISCH VERBESSERTER CHEAT SHEET BEREICH (unverändert) ---
+        # --- OPTISCH VERBESSERTER CHEAT SHEET BEREICH ---
         
         st.header("🎯 Strategie-Cheat Sheet")
         
