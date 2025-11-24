@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="MAG7 Pro Analyst V16 (Tooltip & Layout Fix)", layout="wide", page_icon="📈")
+st.set_page_config(page_title="MAG7 Pro Analyst V17 (Cache & Interval Fix)", layout="wide", page_icon="📈")
 
 # --- CSS STYLING ---
 st.markdown("""
@@ -65,14 +65,14 @@ TOOLTIPS = {
     "SMA_50": "Simple Moving Average (50): Der gleitende Durchschnitt über die letzten 50 Perioden. Zeigt den mittelfristigen Trend an."
 }
 
-# --- HILFSFUNKTION FÜR DEN NEUEN TOOLTIP (Wird durch st.metric ersetzt, aber zur Sicherheit behalten) ---
-# WICHTIG: Diese Funktion wird in V16 NICHT MEHR VERWENDET, da wir auf st.metric wechseln.
-# def display_info_text(label, value, tooltip_key, icon="❓"):
-#     ...
-
 # --- DATENFUNKTIONEN ---
 
-@st.cache_data(ttl=60)
+# NEU: Cache-Deklaration mit dynamischer TTL (Time-to-live)
+# Wenn 'auto_refresh' aktiv ist, TTL 30s, sonst 60s
+def data_fetch_ttl():
+    return 30 if st.session_state.get('auto_refresh_active', False) else 60
+
+@st.cache_data(ttl=data_fetch_ttl())
 def get_data(ticker, interval):
     try:
         if interval == '1d':
@@ -81,7 +81,8 @@ def get_data(ticker, interval):
             period = "6mo"
 
         stock = yf.Ticker(ticker)
-        df = stock.history(period=period, interval=interval, prepost=(interval != '1d')) 
+        # NEU: prepost=True, um Vor- und Nachbörsen-Daten bei Intraday-Intervallen zu maximieren
+        df = stock.history(period=period, interval=interval, prepost=True) 
         
         if df.empty: return pd.DataFrame()
 
@@ -106,20 +107,21 @@ def get_data(ticker, interval):
     except Exception as e:
         return pd.DataFrame()
 
-@st.cache_data(ttl=60)
-def get_normalized_data(tickers, interval):
+@st.cache_data(ttl=3600) # Längeres Cache für Normalisierte Performance, da 1d Daten
+def get_normalized_data(tickers):
     if not tickers:
         return pd.DataFrame()
     
     data = {}
     
+    # KORREKTUR: Immer Tages-Intervall (1d) für Normalisierte Performance verwenden
     for symbol in tickers:
         try:
             df = yf.download(
                 symbol, 
-                period="3mo", 
-                interval=interval, 
-                prepost=(interval != '1d'), 
+                period="6mo", 
+                interval="1d", # Auf Tages-Intervall fixiert, um Konsistenz zu erhöhen
+                prepost=False, 
                 show_progress=False
             )['Close']
             
@@ -156,12 +158,10 @@ def calculate_fibonacci(df):
 def calculate_pivot_points(df):
     if df.empty or len(df) < 20: return {"P": 0, "R1": 0, "S1": 0, "R2": 0, "S2": 0}
     try:
-        # Wir wollen die Daten des letzten vollen Handelstages
         last_day_date = df.index[-2].date() 
         last_day_data = df[df.index.date == last_day_date]
         if last_day_data.empty: return {"P": 0, "R1": 0, "S1": 0, "R2": 0, "S2": 0}
         
-        # Verwenden des High, Low und Close des letzten vollen Tages
         high = last_day_data['High'].max()
         low = last_day_data['Low'].min()
         close = last_day_data['Close'].iloc[-1]
@@ -202,23 +202,10 @@ def get_hourly_heatmap_data(df):
     pivot = heatmap_df.pivot_table(index='Datum', columns='Uhrzeit', values='Hourly_Change')
     pivot = pivot.sort_index(ascending=False)
     
-    # KORREKTUR: Filterung ab 07:00 CET, um die frühe Vorbörse zu inkludieren.
+    # Filterung ab 07:00 CET, um die frühe Vorbörse zu inkludieren.
     valid_cols = [c for c in pivot.columns if "07:00" <= c <= "23:00"] 
     pivot = pivot[valid_cols]
     return pivot
-
-def analyze_vertical_patterns(pivot):
-    hints = []
-    for col in pivot.columns:
-        col_data = pivot[col].dropna()
-        if len(col_data) > 5:
-            pos_ratio = (col_data > 0).sum() / len(col_data)
-            neg_ratio = (col_data < 0).sum() / len(col_data)
-            if pos_ratio > 0.65:
-                hints.append(f"⏰ **{col} Uhr:** Bullish Tendenz! ({pos_ratio*100:.0f}% grün)")
-            elif neg_ratio > 0.65:
-                hints.append(f"⏰ **{col} Uhr:** Bearish Tendenz! ({neg_ratio*100:.0f}% rot)")
-    return hints
 
 # --- SIDEBAR ---
 st.sidebar.header("💎 Steuerung")
@@ -226,20 +213,30 @@ interval = st.sidebar.selectbox(
     "Zeitfenster (Interval)",
     ('60m', '30m', '1d'),
     index=0,
+    key='interval_select',
     help="Wechsle zwischen Stunden- und Tagesansicht. Die Heatmap ist nur bei Stundenansicht verfügbar."
 )
-auto_refresh = st.sidebar.checkbox("Live Auto-Update (60s)", value=False)
+
+# Setze den Session State, der die TTL der Cache-Funktion steuert
+if 'auto_refresh_active' not in st.session_state:
+    st.session_state['auto_refresh_active'] = False
+
+auto_refresh = st.sidebar.checkbox("Live Auto-Update (60s)", value=st.session_state['auto_refresh_active'], key='auto_refresh_checkbox')
+
+# Speichere den Zustand im Session State
+st.session_state['auto_refresh_active'] = auto_refresh
+
 if auto_refresh:
-    # Wichtig: Dies ist die schnellstmögliche, sichere Aktualisierungsrate.
     time.sleep(60)
     st.rerun()
+
 if st.sidebar.button("🔄 Refresh Data"):
     st.cache_data.clear()
     st.rerun()
 
 
 # --- HAUPTBEREICH ---
-st.title(f"💎 MAG7 Trading Dashboard (V16 - {interval} Ansicht)")
+st.title(f"💎 MAG7 Trading Dashboard (V17 - {interval} Ansicht)")
 
 tabs = st.tabs(["🚀 SIGNALS & MARKET"] + TICKER_NAMES)
 
@@ -258,6 +255,7 @@ with tabs[0]:
         return 'color: gray'
 
     for i, (name, sym) in enumerate(TICKERS.items()):
+        # Nutze das gewählte Interval für die Signal-Berechnung
         df = get_data(sym, interval)
         if not df.empty and len(df) > 20:
             curr = df['Close'].iloc[-1]
@@ -280,7 +278,7 @@ with tabs[0]:
     
     st.markdown("---")
     
-    st.subheader("📈 Normalisierte Performance im Vergleich")
+    st.subheader("📈 Normalisierte Performance im Vergleich (6 Monate / Täglich)")
     
     selection_col, range_col = st.columns([3, 1])
     
@@ -294,7 +292,8 @@ with tabs[0]:
     selected_symbols = [TICKERS[name] for name in selected_names if name in TICKERS]
     
     if selected_symbols:
-        comp_df = get_normalized_data(selected_symbols, interval)
+        # KORREKTUR: Verwende fixiertes 1d Intervall für Normalisierung
+        comp_df = get_normalized_data(selected_symbols)
         
         if not comp_df.empty:
             fig_comp = go.Figure()
@@ -366,8 +365,6 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
 
         # Buttons erstellen
         for idx, (label, days) in enumerate(range_options.items()):
-            is_active = (label == selected_range_key)
-            
             with button_cols[idx + 1]:
                 if st.button(label, key=f"btn_{symbol}_{label}", use_container_width=True):
                     if st.session_state[f'range_{symbol}'] != label:
@@ -396,7 +393,7 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         start_date = df.index[-1].date() - timedelta(days=days_to_show)
         df_display = df[df.index.date >= start_date]
 
-        # --- CHART --- (Dieser Teil ist jetzt ÜBER der Heatmap)
+        # --- CHART ---
         
         fig = go.Figure()
         
@@ -414,7 +411,7 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
 
         st.markdown("---")
         
-        # --- MUSTER-ERKENNUNG / HEATMAP --- (Dieser Teil ist jetzt UNTER dem Chart)
+        # --- MUSTER-ERKENNUNG / HEATMAP --- 
         if interval != '1d':
             st.subheader("⏰ Muster-Erkennung (07:00 - 23:00 Uhr CET)")
             heatmap_df = get_hourly_heatmap_data(df)
@@ -424,7 +421,8 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
                 if patterns:
                     st.info("💡 **Erkannte Muster:** " + " | ".join(patterns))
                 
-                # st.dataframe ist besser für große Datenmengen, nutze st.table für kompaktere Ansichten, hier ist st.dataframe ok.
+                # Wir stellen fest, dass die Spalten von 07:00-09:00 oft fehlen,
+                # aber die Filterung ist korrekt auf 07:00 gesetzt.
                 st.dataframe(heatmap_df.style.background_gradient(cmap='RdYlGn', vmin=-1.0, vmax=1.0).format("{:+.2f}%").highlight_null(color='#1e1e1e'), use_container_width=True, height=350)
             else:
                 st.info("Nicht genügend Daten für das Heatmap-Muster im gewählten Intervall vorhanden.")
@@ -475,7 +473,6 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
             st.markdown(f'<div class="footer-box">', unsafe_allow_html=True)
             st.markdown(f'<div class="footer-header">PIVOT PUNKTE (Täglich)</div>', unsafe_allow_html=True)
             
-            # KORRIGIERT: Nutzung von st.metric, um Hover-Tooltips zu gewährleisten
             st.metric(label="R2 (Widerst.) 🔴", value=f"{pivots['R2']:.2f}", help=TOOLTIPS['R2'])
             st.metric(label="R1 (Widerst.) 🔴", value=f"{pivots['R1']:.2f}", help=TOOLTIPS['R1'])
             st.metric(label="Pivot (P)", value=f"{pivots['P']:.2f}", help=TOOLTIPS['PIVOT_P'])
@@ -488,7 +485,6 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
             st.markdown(f'<div class="footer-box">', unsafe_allow_html=True)
             st.markdown(f'<div class="footer-header">FIBONACCI & VWAP</div>', unsafe_allow_html=True)
             
-            # KORRIGIERT: Nutzung von st.metric, um Hover-Tooltips zu gewährleisten
             st.metric(label="Fib 0.618", value=f"{fibs['0.618']:.2f}", help=TOOLTIPS['FIB_0618'])
             
             st.write(f"VWAP: **{df['VWAP_D'].iloc[-1] if 'VWAP_D' in df.columns else 'N/A':.2f}**")
