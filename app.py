@@ -7,8 +7,7 @@ import time
 from datetime import datetime, timedelta
 
 # --- PAGE CONFIG ---
-# KORREKTUR: st.set_config muss st.set_page_config sein!
-st.set_page_config(page_title="MAG7 Pro Analyst V20 (Config Fix)", layout="wide", page_icon="📈")
+st.set_page_config(page_title="MAG7 Pro Analyst V21 (EUR/USD Price Fix)", layout="wide", page_icon="📈")
 
 # --- CSS STYLING ---
 st.markdown("""
@@ -78,6 +77,21 @@ TOOLTIPS = {
 }
 
 # --- DATENFUNKTIONEN ---
+
+# NEU: Funktion zum Abrufen des EUR/USD-Kurses
+@st.cache_data(ttl=60) # Aktualisiert alle 60 Sekunden
+def get_eur_usd_rate():
+    try:
+        # Ticker für EUR/USD
+        eur_usd = yf.Ticker("EURUSD=X")
+        # Hole die aktuellen Preisdaten
+        df = eur_usd.history(period="1d", interval="1m")
+        if not df.empty:
+            # Den letzten Schlusskurs verwenden
+            return df['Close'].iloc[-1]
+        return 1.08 # Fallback-Wert
+    except Exception:
+        return 1.08 # Fallback-Wert
 
 # NEU: Cache-Deklaration mit dynamischer TTL (Time-to-live)
 def data_fetch_ttl():
@@ -255,6 +269,8 @@ auto_refresh = st.sidebar.checkbox("Live Auto-Update (60s)", value=st.session_st
 st.session_state['auto_refresh_active'] = auto_refresh
 
 if auto_refresh:
+    # Lade den EUR/USD-Kurs im Hintergrund neu
+    get_eur_usd_rate.clear() 
     time.sleep(60)
     st.rerun()
 
@@ -264,7 +280,14 @@ if st.sidebar.button("🔄 Refresh Data"):
 
 
 # --- HAUPTBEREICH ---
-st.title(f"💎 MAG7 Trading Dashboard (V20 - {interval} Ansicht)")
+
+# Den aktuellen Wechselkurs abrufen
+EUR_USD_RATE = get_eur_usd_rate()
+
+st.title(f"💎 MAG7 Trading Dashboard (V21 - {interval} Ansicht)")
+st.caption(f"Aktueller Wechselkurs: **1 USD = {EUR_USD_RATE:.4f} EUR**")
+st.markdown("---")
+
 
 tabs = st.tabs(["🚀 SIGNALS & MARKET"] + TICKER_NAMES)
 
@@ -285,10 +308,11 @@ with tabs[0]:
     for i, (name, sym) in enumerate(TICKERS.items()):
         df = get_data(sym, interval)
         if not df.empty and len(df) > 20:
-            curr = df['Close'].iloc[-1]
+            curr_usd = df['Close'].iloc[-1]
+            curr_eur = curr_usd * EUR_USD_RATE
             
             # 1. Veränderung der letzten Periode (für Klammer)
-            last_period_change_perc = ((curr - df['Close'].iloc[-2]) / curr) * 100
+            last_period_change_perc = ((curr_usd - df['Close'].iloc[-2]) / curr_usd) * 100
             
             # 2. Heutige Veränderung (für Hauptwert)
             # Finde den Schlusskurs vom Vortag (Letzte Zeile des Vortags)
@@ -296,22 +320,23 @@ with tabs[0]:
             daily_start_price = yesterday_close
             
             # Prozentuale Änderung seit Tagesbeginn (oder Vortagesschluss)
-            daily_change_perc = ((curr - daily_start_price) / daily_start_price) * 100 if daily_start_price else 0
+            daily_change_perc = ((curr_usd - daily_start_price) / daily_start_price) * 100 if daily_start_price else 0
             
             # Kombinierte Metrik
             change_str = f"{daily_change_perc:+.2f}% heute ({last_period_change_perc:+.2f}% / Periode)"
+            price_str = f"{curr_usd:.2f} $ ({curr_eur:.2f} €)"
             
-            signal = get_market_signal(df, curr)
+            signal = get_market_signal(df, curr_usd)
             rsi = df['RSI_14'].iloc[-1] if 'RSI_14' in df.columns else 50
             
-            overview_data.append({"Asset": name, "SYMBOL": sym, "SIGNAL": signal, "Preis (€/$)": curr, "Change % (Tag/Periode)": change_str, "RSI": rsi})
+            overview_data.append({"Asset": name, "SYMBOL": sym, "SIGNAL": signal, "Preis ($/€)": price_str, "Change % (Tag/Periode)": change_str, "RSI": rsi})
         prog.progress((i+1)/len(TICKERS))
     prog.empty()
     
     if overview_data:
         st.dataframe(
             pd.DataFrame(overview_data).style
-            .format({"Preis (€/$)": "{:.2f}", "RSI": "{:.1f}"})
+            .format({"RSI": "{:.1f}"})
             .applymap(color_signals, subset=['SIGNAL']),
             use_container_width=True, height=600
         )
@@ -365,16 +390,17 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
             st.warning("Lade Daten... (Warte auf Marktöffnung, API, oder wähle passendes Intervall)")
             continue
 
-        curr = df['Close'].iloc[-1]
+        curr_usd = df['Close'].iloc[-1]
+        curr_eur = curr_usd * EUR_USD_RATE
         fibs = calculate_fibonacci(df)
         pivots = calculate_pivot_points(df) 
-        signal = get_market_signal(df, curr)
+        signal = get_market_signal(df, curr_usd)
         
         # KORREKTUR: Tagesveränderung (von Open/Vortag Close) vs. Periodenveränderung
         
         # 1. Veränderung der letzten Periode (für Klammer)
-        last_period_change_abs = curr - df['Close'].iloc[-2]
-        last_period_change_perc = ((curr - df['Close'].iloc[-2]) / curr) * 100
+        last_period_change_abs = curr_usd - df['Close'].iloc[-2]
+        last_period_change_perc = ((curr_usd - df['Close'].iloc[-2]) / curr_usd) * 100
         
         # 2. Heutige Veränderung (für Hauptwert)
         # Tagesstartpreis: Vortagesschluss, falls Daten vom Vortag vorhanden, sonst der erste Open des DF
@@ -382,21 +408,21 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         daily_start_price = yesterday_close
         
         # Absolute und Prozentuale Änderung seit Tagesbeginn
-        daily_change_abs = curr - daily_start_price
+        daily_change_abs = curr_usd - daily_start_price
         daily_change_perc = (daily_change_abs / daily_start_price) * 100 if daily_start_price else 0
         
         
         # --- HEADER METRICS (Mit R1 und S1) ---
         c1, c2, c3, c4 = st.columns(4)
         
-        # KORREKTUR DER PREIS-METRIK
+        # NEUE PREIS-METRIK mit Dollar und Euro
         c1.metric(
             label="Preis (DE Zeit)", 
-            value=f"{curr:.2f} (€/$)", 
+            value=f"{curr_usd:.2f} $ ({curr_eur:.2f} €)", 
             # Haupt-Delta ist die tägliche prozentuale Veränderung
             delta=f"{daily_change_perc:+.2f}% heute ({last_period_change_perc:+.2f}% / Periode)",
             # Hilfe-Text für die zweite Metrik
-            help=f"Preisänderung der letzten Periode ({interval}): {last_period_change_abs:+.2f} ({last_period_change_perc:+.2f}%)"
+            help=f"Preisänderung der letzten Periode ({interval}): {last_period_change_abs:+.2f} $ ({last_period_change_perc:+.2f}%)"
         )
         
         c2.metric("SIGNAL", signal.replace("💎", "").replace("🔥",""))
@@ -504,7 +530,7 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         rsi_val = df['RSI_14'].iloc[-1] if 'RSI_14' in df.columns else 50
         adx_status = "Starker Trend 📈" if adx_val >= 25 else "Schwacher/Seitwärtstrend 🟡"
         adx_color = "green-status" if adx_val >= 25 else "yellow-status"
-        trend_status = '🟢 Bullish' if curr > df['SMA_50'].iloc[-1] else '🔴 Bearish'
+        trend_status = '🟢 Bullish' if curr_usd > df['SMA_50'].iloc[-1] else '🔴 Bearish'
         
         col_adx, col_rsi, col_trend = st.columns(3)
         
