@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="MAG7 Pro Analyst V18 (NameError Fix)", layout="wide", page_icon="📈")
+st.set_config(page_title="MAG7 Pro Analyst V19 (Price & Pattern Refinement)", layout="wide", page_icon="📈")
 
 # --- CSS STYLING ---
 st.markdown("""
@@ -16,6 +16,8 @@ st.markdown("""
     .metric-card { background-color: #1e1e1e; padding: 15px; border-radius: 10px; border: 1px solid #333; margin-bottom: 10px; }
     .stDataFrame { font-size: 14px; }
     div[data-testid="stMetricValue"] { font-weight: bold; font-size: 1.2rem; } 
+    /* Anpassung der Haupt-Metrik, um den Platz für die zusätzliche Info zu schaffen */
+    div[data-testid="stMetricValue"] { font-weight: bold; font-size: 1.5rem; } 
 
     /* Spezielles Styling für den optimierten Footer */
     .footer-box { padding: 10px; border-radius: 5px; margin-bottom: 10px; border: 1px solid #333; }
@@ -39,6 +41,15 @@ st.markdown("""
         background-color: #4CAF50 !important;
         border-color: #4CAF50 !important;
         font-weight: bold;
+    }
+    
+    /* Style für die Kaufempfehlung */
+    .buy-recommendation {
+        background-color: #005000;
+        padding: 10px;
+        border-radius: 5px;
+        font-weight: bold;
+        color: white;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -69,6 +80,7 @@ TOOLTIPS = {
 
 # NEU: Cache-Deklaration mit dynamischer TTL (Time-to-live)
 def data_fetch_ttl():
+    # Kürzere TTL (30s) wenn Live-Update aktiv, um aktuellere Preise zu bekommen
     return 30 if st.session_state.get('auto_refresh_active', False) else 60
 
 @st.cache_data(ttl=data_fetch_ttl())
@@ -112,7 +124,6 @@ def get_normalized_data(tickers):
     
     data = {}
     
-    # KORREKTUR: Immer Tages-Intervall (1d) für Normalisierte Performance verwenden
     for symbol in tickers:
         try:
             df = yf.download(
@@ -206,19 +217,24 @@ def get_hourly_heatmap_data(df):
     return pivot
 
 def analyze_vertical_patterns(pivot):
-    # DIESE FUNKTION WAR WAHRSCHEINLICH AUS VERSEHEN GELÖSCHT
     hints = []
+    buy_times = []
+    
     for col in pivot.columns:
         col_data = pivot[col].dropna()
         if len(col_data) > 5:
             pos_ratio = (col_data > 0).sum() / len(col_data)
             neg_ratio = (col_data < 0).sum() / len(col_data)
+            
+            # Muster: Bullish Tendenz (über 65% grüne Perioden zur vollen Stunde)
             if pos_ratio > 0.65:
                 hints.append(f"⏰ **{col} Uhr:** Bullish Tendenz! ({pos_ratio*100:.0f}% grün)")
+                buy_times.append(col)
             elif neg_ratio > 0.65:
                 hints.append(f"⏰ **{col} Uhr:** Bearish Tendenz! ({neg_ratio*100:.0f}% rot)")
-    return hints
-
+    
+    # NEU: Nur die aktuellen bullischen Zeiten zurückgeben
+    return hints, buy_times
 
 # --- SIDEBAR ---
 st.sidebar.header("💎 Steuerung")
@@ -230,13 +246,11 @@ interval = st.sidebar.selectbox(
     help="Wechsle zwischen Stunden- und Tagesansicht. Die Heatmap ist nur bei Stundenansicht verfügbar."
 )
 
-# Setze den Session State, der die TTL der Cache-Funktion steuert
 if 'auto_refresh_active' not in st.session_state:
     st.session_state['auto_refresh_active'] = False
 
 auto_refresh = st.sidebar.checkbox("Live Auto-Update (60s)", value=st.session_state['auto_refresh_active'], key='auto_refresh_checkbox')
 
-# Speichere den Zustand im Session State
 st.session_state['auto_refresh_active'] = auto_refresh
 
 if auto_refresh:
@@ -249,7 +263,7 @@ if st.sidebar.button("🔄 Refresh Data"):
 
 
 # --- HAUPTBEREICH ---
-st.title(f"💎 MAG7 Trading Dashboard (V18 - {interval} Ansicht)")
+st.title(f"💎 MAG7 Trading Dashboard (V19 - {interval} Ansicht)")
 
 tabs = st.tabs(["🚀 SIGNALS & MARKET"] + TICKER_NAMES)
 
@@ -271,20 +285,39 @@ with tabs[0]:
         df = get_data(sym, interval)
         if not df.empty and len(df) > 20:
             curr = df['Close'].iloc[-1]
-            change = ((curr - df['Close'].iloc[-2]) / curr) * 100
+            
+            # KORREKTUR: Tagesveränderung (von Open/Vortag Close) vs. Periodenveränderung
+            
+            # 1. Veränderung der letzten Periode (für Klammer)
+            last_period_change = ((curr - df['Close'].iloc[-2]) / curr) * 100
+            
+            # 2. Heutige Veränderung (für Hauptwert)
+            if df.index[-1].date() == df.index[0].date(): # Wenn nur ein Tag Daten (z.B. bei 1D Range)
+                daily_start_price = df['Open'].iloc[0]
+            else:
+                # Findet den Schlusskurs vom Vortag (Letzte Zeile des Vortags)
+                yesterday_close = df[df.index.date < df.index[-1].date()]['Close'].iloc[-1] if not df[df.index.date < df.index[-1].date()].empty else df['Open'].iloc[0]
+                daily_start_price = yesterday_close
+            
+            # Prozentuale Änderung seit Tagesbeginn (oder Vortagesschluss)
+            daily_change = ((curr - daily_start_price) / daily_start_price) * 100 if daily_start_price else 0
+            
+            # Kombinierte Metrik
+            change_str = f"{daily_change:+.2f}% heute ({last_period_change:+.2f}% / Periode)"
+            
             signal = get_market_signal(df, curr)
             rsi = df['RSI_14'].iloc[-1] if 'RSI_14' in df.columns else 50
             
-            overview_data.append({"Asset": name, "SYMBOL": sym, "SIGNAL": signal, "Preis (€/$)": curr, "Change %": change, "RSI": rsi})
+            overview_data.append({"Asset": name, "SYMBOL": sym, "SIGNAL": signal, "Preis (€/$)": curr, "Change % (Tag/Periode)": change_str, "RSI": rsi})
         prog.progress((i+1)/len(TICKERS))
     prog.empty()
     
     if overview_data:
         st.dataframe(
             pd.DataFrame(overview_data).style
-            .format({"Preis (€/$)": "{:.2f}", "Change %": "{:+.2f}%", "RSI": "{:.1f}"})
-            .applymap(color_signals, subset=['SIGNAL'])
-            .applymap(lambda x: 'color: #00ff00' if x > 0 else 'color: #ff4b4b', subset=['Change %']),
+            .format({"Preis (€/$)": "{:.2f}", "RSI": "{:.1f}"})
+            .applymap(color_signals, subset=['SIGNAL']),
+            # Hier müssen wir auf die Spalte 'Change % (Tag/Periode)' verzichten, da sie jetzt ein String ist
             use_container_width=True, height=600
         )
     
@@ -342,9 +375,35 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         pivots = calculate_pivot_points(df) 
         signal = get_market_signal(df, curr)
         
+        # KORREKTUR: Tagesveränderung (von Open/Vortag Close) vs. Periodenveränderung
+        
+        # 1. Veränderung der letzten Periode (für Klammer)
+        last_period_change_abs = curr - df['Close'].iloc[-2]
+        last_period_change_perc = ((curr - df['Close'].iloc[-2]) / curr) * 100
+        
+        # 2. Heutige Veränderung (für Hauptwert)
+        # Tagesstartpreis: Vortagesschluss, falls Daten vom Vortag vorhanden, sonst der erste Open des DF
+        yesterday_close = df[df.index.date < df.index[-1].date()]['Close'].iloc[-1] if not df[df.index.date < df.index[-1].date()].empty else df['Open'].iloc[0]
+        daily_start_price = yesterday_close
+        
+        # Absolute und Prozentuale Änderung seit Tagesbeginn
+        daily_change_abs = curr - daily_start_price
+        daily_change_perc = (daily_change_abs / daily_start_price) * 100 if daily_start_price else 0
+        
+        
         # --- HEADER METRICS (Mit R1 und S1) ---
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Preis (DE Zeit)", f"{curr:.2f}", f"{curr - df['Close'].iloc[-2]:.2f}")
+        
+        # KORREKTUR DER PREIS-METRIK
+        c1.metric(
+            label="Preis (DE Zeit)", 
+            value=f"{curr:.2f} (€/$)", 
+            # Haupt-Delta ist die tägliche prozentuale Veränderung
+            delta=f"{daily_change_perc:+.2f}% heute",
+            # Hilfe-Text für die zweite Metrik
+            help=f"Preisänderung der letzten Periode ({interval}): {last_period_change_abs:+.2f} ({last_period_change_perc:+.2f}%)"
+        )
+        
         c2.metric("SIGNAL", signal.replace("💎", "").replace("🔥",""))
         
         c3.metric("Resistance (R1)", f"{pivots['R1']:.2f}", help=TOOLTIPS['R1'])
@@ -360,7 +419,6 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
             "1D": 1
         }
         
-        # Session State auf einen gültigen Key initialisieren
         if f'range_{symbol}' not in st.session_state:
             st.session_state[f'range_{symbol}'] = '3M'
         
@@ -374,7 +432,6 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         with button_cols[0]:
             st.markdown("Zeitspanne:")
 
-        # Buttons erstellen
         for idx, (label, days) in enumerate(range_options.items()):
             with button_cols[idx + 1]:
                 if st.button(label, key=f"btn_{symbol}_{label}", use_container_width=True):
@@ -382,7 +439,6 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
                         st.session_state[f'range_{symbol}'] = label
                         st.rerun()
 
-        # Manuelle CSS-Hervorhebung für den aktiven Button nach dem Rerun
         st.markdown(f"""
             <script>
                 var active_btn = parent.document.querySelector('[data-testid="stButton"] button[key="btn_{symbol}_{selected_range_key}"]');
@@ -392,9 +448,8 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
             </script>
             """, unsafe_allow_html=True)
             
-        st.markdown("---") # Trennung zwischen Buttons und Chart
+        st.markdown("---") 
         
-        # Sicherstellen, dass der Key existiert
         try:
             days_to_show = range_options[selected_range_key]
         except KeyError:
@@ -428,8 +483,13 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
             heatmap_df = get_hourly_heatmap_data(df)
             
             if not heatmap_df.empty:
-                # FUNKTION AUFGERUFEN
-                patterns = analyze_vertical_patterns(heatmap_df) 
+                # Musteranalyse gibt jetzt Hints und Buy Times zurück
+                patterns, buy_times = analyze_vertical_patterns(heatmap_df) 
+                
+                if buy_times:
+                    buy_time_str = ", ".join(buy_times)
+                    st.markdown(f'<div class="buy-recommendation">🟢 Kaufempfehlung bei: **{buy_time_str} Uhr** (Statistisch bullische Stunde)</div>', unsafe_allow_html=True)
+                
                 if patterns:
                     st.info("💡 **Erkannte Muster:** " + " | ".join(patterns))
                 
