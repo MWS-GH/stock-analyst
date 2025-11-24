@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="MAG7 Pro Analyst V17 (Cache & Interval Fix)", layout="wide", page_icon="📈")
+st.set_page_config(page_title="MAG7 Pro Analyst V18 (NameError Fix)", layout="wide", page_icon="📈")
 
 # --- CSS STYLING ---
 st.markdown("""
@@ -68,7 +68,6 @@ TOOLTIPS = {
 # --- DATENFUNKTIONEN ---
 
 # NEU: Cache-Deklaration mit dynamischer TTL (Time-to-live)
-# Wenn 'auto_refresh' aktiv ist, TTL 30s, sonst 60s
 def data_fetch_ttl():
     return 30 if st.session_state.get('auto_refresh_active', False) else 60
 
@@ -81,7 +80,6 @@ def get_data(ticker, interval):
             period = "6mo"
 
         stock = yf.Ticker(ticker)
-        # NEU: prepost=True, um Vor- und Nachbörsen-Daten bei Intraday-Intervallen zu maximieren
         df = stock.history(period=period, interval=interval, prepost=True) 
         
         if df.empty: return pd.DataFrame()
@@ -207,6 +205,21 @@ def get_hourly_heatmap_data(df):
     pivot = pivot[valid_cols]
     return pivot
 
+def analyze_vertical_patterns(pivot):
+    # DIESE FUNKTION WAR WAHRSCHEINLICH AUS VERSEHEN GELÖSCHT
+    hints = []
+    for col in pivot.columns:
+        col_data = pivot[col].dropna()
+        if len(col_data) > 5:
+            pos_ratio = (col_data > 0).sum() / len(col_data)
+            neg_ratio = (col_data < 0).sum() / len(col_data)
+            if pos_ratio > 0.65:
+                hints.append(f"⏰ **{col} Uhr:** Bullish Tendenz! ({pos_ratio*100:.0f}% grün)")
+            elif neg_ratio > 0.65:
+                hints.append(f"⏰ **{col} Uhr:** Bearish Tendenz! ({neg_ratio*100:.0f}% rot)")
+    return hints
+
+
 # --- SIDEBAR ---
 st.sidebar.header("💎 Steuerung")
 interval = st.sidebar.selectbox(
@@ -236,7 +249,7 @@ if st.sidebar.button("🔄 Refresh Data"):
 
 
 # --- HAUPTBEREICH ---
-st.title(f"💎 MAG7 Trading Dashboard (V17 - {interval} Ansicht)")
+st.title(f"💎 MAG7 Trading Dashboard (V18 - {interval} Ansicht)")
 
 tabs = st.tabs(["🚀 SIGNALS & MARKET"] + TICKER_NAMES)
 
@@ -255,7 +268,6 @@ with tabs[0]:
         return 'color: gray'
 
     for i, (name, sym) in enumerate(TICKERS.items()):
-        # Nutze das gewählte Interval für die Signal-Berechnung
         df = get_data(sym, interval)
         if not df.empty and len(df) > 20:
             curr = df['Close'].iloc[-1]
@@ -292,7 +304,6 @@ with tabs[0]:
     selected_symbols = [TICKERS[name] for name in selected_names if name in TICKERS]
     
     if selected_symbols:
-        # KORREKTUR: Verwende fixiertes 1d Intervall für Normalisierung
         comp_df = get_normalized_data(selected_symbols)
         
         if not comp_df.empty:
@@ -417,12 +428,11 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
             heatmap_df = get_hourly_heatmap_data(df)
             
             if not heatmap_df.empty:
-                patterns = analyze_vertical_patterns(heatmap_df)
+                # FUNKTION AUFGERUFEN
+                patterns = analyze_vertical_patterns(heatmap_df) 
                 if patterns:
                     st.info("💡 **Erkannte Muster:** " + " | ".join(patterns))
                 
-                # Wir stellen fest, dass die Spalten von 07:00-09:00 oft fehlen,
-                # aber die Filterung ist korrekt auf 07:00 gesetzt.
                 st.dataframe(heatmap_df.style.background_gradient(cmap='RdYlGn', vmin=-1.0, vmax=1.0).format("{:+.2f}%").highlight_null(color='#1e1e1e'), use_container_width=True, height=350)
             else:
                 st.info("Nicht genügend Daten für das Heatmap-Muster im gewählten Intervall vorhanden.")
