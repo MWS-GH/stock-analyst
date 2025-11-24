@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="MAG7 Pro Analyst V15 (Final Layout)", layout="wide", page_icon="📈")
+st.set_page_config(page_title="MAG7 Pro Analyst V16 (Tooltip & Layout Fix)", layout="wide", page_icon="📈")
 
 # --- CSS STYLING ---
 st.markdown("""
@@ -21,20 +21,7 @@ st.markdown("""
     .footer-box { padding: 10px; border-radius: 5px; margin-bottom: 10px; border: 1px solid #333; }
     .footer-header { font-weight: bold; color: #4CAF50; }
     
-    /* Style für das kleine Info-Icon */
-    /* st.button mit Key als Tooltip-Auslöser */
-    div[data-testid="stButton"] button {
-        height: 100%;
-        padding: 0;
-        margin: 0;
-        line-height: 1;
-        border: none;
-        background-color: transparent;
-        color: gray;
-    }
-    
-    /* Style für die Zeitspannen-Buttons */
-    /* Setzt die Button-Größe und den Stil für die Zeitauswahl */
+    /* WICHTIG: Überschreibt das Streamlit-Button-CSS für die Zeitspannen-Buttons */
     div[data-testid="column"] > div[data-testid="stButton"] button {
         padding: 4px 8px; /* Kleinerer Padding */
         font-size: 0.8rem;
@@ -44,11 +31,15 @@ st.markdown("""
         color: white;
         width: 100%;
         margin-top: 5px;
+        transition: background-color 0.1s, border-color 0.1s;
     }
-    /* Aktiver Button grün (setzt den Style, wenn der Button gedrückt wurde und st.rerun stattfand) */
-    /* Streamlit hat keine einfache Möglichkeit, den "aktiven" Zustand über Reruns zu erhalten,
-       daher wird hier nur der Standard- und Hover-Zustand gesetzt. Der eigentliche aktive Zustand
-       wird über den Rerun-Effekt durch das Fehlen anderer Klicks simuliert. */
+    
+    /* Highlight der aktiven Zeitspannen-Buttons (wird per Script gesetzt) */
+    .active-time-button {
+        background-color: #4CAF50 !important;
+        border-color: #4CAF50 !important;
+        font-weight: bold;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -74,18 +65,10 @@ TOOLTIPS = {
     "SMA_50": "Simple Moving Average (50): Der gleitende Durchschnitt über die letzten 50 Perioden. Zeigt den mittelfristigen Trend an."
 }
 
-# --- HILFSFUNKTION FÜR DEN NEUEN TOOLTIP ---
-def display_info_text(label, value, tooltip_key, icon="❓"):
-    """Zeigt Label und Wert nebeneinander und fügt einen klickbaren Tooltip hinzu."""
-    c_val, c_info = st.columns([0.8, 0.2])
-    
-    # Textanzeige (Label und Wert fett)
-    c_val.markdown(f"{label}: **{value}**")
-    
-    # Klickbares Icon, das st.help auslöst
-    if c_info.button(icon, key=f"{label}_{value}"):
-        st.help(TOOLTIPS[tooltip_key])
-
+# --- HILFSFUNKTION FÜR DEN NEUEN TOOLTIP (Wird durch st.metric ersetzt, aber zur Sicherheit behalten) ---
+# WICHTIG: Diese Funktion wird in V16 NICHT MEHR VERWENDET, da wir auf st.metric wechseln.
+# def display_info_text(label, value, tooltip_key, icon="❓"):
+#     ...
 
 # --- DATENFUNKTIONEN ---
 
@@ -147,7 +130,6 @@ def get_normalized_data(tickers, interval):
         except Exception:
             pass
             
-    # FIX: Verhindert den ValueError bei leerem Dictionary
     if not data:
         return pd.DataFrame()
         
@@ -174,14 +156,18 @@ def calculate_fibonacci(df):
 def calculate_pivot_points(df):
     if df.empty or len(df) < 20: return {"P": 0, "R1": 0, "S1": 0, "R2": 0, "S2": 0}
     try:
+        # Wir wollen die Daten des letzten vollen Handelstages
         last_day_date = df.index[-2].date() 
         last_day_data = df[df.index.date == last_day_date]
         if last_day_data.empty: return {"P": 0, "R1": 0, "S1": 0, "R2": 0, "S2": 0}
+        
+        # Verwenden des High, Low und Close des letzten vollen Tages
         high = last_day_data['High'].max()
         low = last_day_data['Low'].min()
         close = last_day_data['Close'].iloc[-1]
     except IndexError:
         return {"P": 0, "R1": 0, "S1": 0, "R2": 0, "S2": 0}
+    
     p = (high + low + close) / 3
     r1 = (2 * p) - low
     s1 = (2 * p) - high
@@ -215,6 +201,8 @@ def get_hourly_heatmap_data(df):
     heatmap_df['Uhrzeit'] = heatmap_df.index.strftime("%H:00")
     pivot = heatmap_df.pivot_table(index='Datum', columns='Uhrzeit', values='Hourly_Change')
     pivot = pivot.sort_index(ascending=False)
+    
+    # KORREKTUR: Filterung ab 07:00 CET, um die frühe Vorbörse zu inkludieren.
     valid_cols = [c for c in pivot.columns if "07:00" <= c <= "23:00"] 
     pivot = pivot[valid_cols]
     return pivot
@@ -242,16 +230,16 @@ interval = st.sidebar.selectbox(
 )
 auto_refresh = st.sidebar.checkbox("Live Auto-Update (60s)", value=False)
 if auto_refresh:
+    # Wichtig: Dies ist die schnellstmögliche, sichere Aktualisierungsrate.
     time.sleep(60)
     st.rerun()
 if st.sidebar.button("🔄 Refresh Data"):
-    # Erlaubt dem Benutzer, den Cache manuell zu löschen
     st.cache_data.clear()
     st.rerun()
 
 
 # --- HAUPTBEREICH ---
-st.title(f"💎 MAG7 Trading Dashboard (V15 - {interval} Ansicht)")
+st.title(f"💎 MAG7 Trading Dashboard (V16 - {interval} Ansicht)")
 
 tabs = st.tabs(["🚀 SIGNALS & MARKET"] + TICKER_NAMES)
 
@@ -349,7 +337,6 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         c1.metric("Preis (DE Zeit)", f"{curr:.2f}", f"{curr - df['Close'].iloc[-2]:.2f}")
         c2.metric("SIGNAL", signal.replace("💎", "").replace("🔥",""))
         
-        # Tooltip ist bei st.metric möglich
         c3.metric("Resistance (R1)", f"{pivots['R1']:.2f}", help=TOOLTIPS['R1'])
         c4.metric("Support (S1)", f"{pivots['S1']:.2f}", help=TOOLTIPS['S1'])
 
@@ -363,7 +350,7 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
             "1D": 1
         }
         
-        # KORREKTUR V15: Session State auf einen gültigen Key initialisieren
+        # Session State auf einen gültigen Key initialisieren
         if f'range_{symbol}' not in st.session_state:
             st.session_state[f'range_{symbol}'] = '3M'
         
@@ -372,7 +359,6 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         # Buttons in einer Zeile anzeigen (4 Buttons + 1 Label)
         button_cols = st.columns(len(range_options) + 1)
         
-        # Aktuellen Key abrufen
         selected_range_key = st.session_state[f'range_{symbol}']
         
         with button_cols[0]:
@@ -380,10 +366,10 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
 
         # Buttons erstellen
         for idx, (label, days) in enumerate(range_options.items()):
+            is_active = (label == selected_range_key)
+            
             with button_cols[idx + 1]:
-                # Streamlit setzt keine permanente "active" Klasse; wir nutzen den Rerun-Effekt
                 if st.button(label, key=f"btn_{symbol}_{label}", use_container_width=True):
-                    # Nur Rerun, wenn sich die Auswahl ändert
                     if st.session_state[f'range_{symbol}'] != label:
                         st.session_state[f'range_{symbol}'] = label
                         st.rerun()
@@ -391,19 +377,16 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         # Manuelle CSS-Hervorhebung für den aktiven Button nach dem Rerun
         st.markdown(f"""
             <script>
-                // Wählt den aktiven Button anhand des Labels und Symbols aus und setzt ihn grün
-                var active_btn = parent.document.querySelector('[data-testid="stButton"] button[id*="btn_{symbol}_{selected_range_key}"]:not([id*="btn_{symbol}_{selected_range_key}"] div)');
+                var active_btn = parent.document.querySelector('[data-testid="stButton"] button[key="btn_{symbol}_{selected_range_key}"]');
                 if (active_btn) {{
-                    active_btn.style.backgroundColor = '#4CAF50';
-                    active_btn.style.borderColor = '#4CAF50';
-                    active_btn.style.fontWeight = 'bold';
+                    active_btn.classList.add('active-time-button');
                 }}
             </script>
             """, unsafe_allow_html=True)
             
         st.markdown("---") # Trennung zwischen Buttons und Chart
         
-        # Sicherstellen, dass der Key existiert, falls der Cache alt ist
+        # Sicherstellen, dass der Key existiert
         try:
             days_to_show = range_options[selected_range_key]
         except KeyError:
@@ -413,23 +396,7 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         start_date = df.index[-1].date() - timedelta(days=days_to_show)
         df_display = df[df.index.date >= start_date]
 
-        # --- HEATMAP ---
-        if interval != '1d':
-            st.subheader("⏰ Muster-Erkennung (07:00 - 23:00 Uhr CET)")
-            heatmap_df = get_hourly_heatmap_data(df)
-            
-            if not heatmap_df.empty:
-                patterns = analyze_vertical_patterns(heatmap_df)
-                if patterns:
-                    st.info("💡 **Erkannte Muster:** " + " | ".join(patterns))
-                
-                st.dataframe(heatmap_df.style.background_gradient(cmap='RdYlGn', vmin=-1.0, vmax=1.0).format("{:+.2f}%").highlight_null(color='#1e1e1e'), use_container_width=True, height=350)
-        else:
-            st.info("Heatmap ist nur für Stunden-Intervalle (30m / 60m) verfügbar.")
-        
-        st.markdown("---")
-
-        # --- CHART ---
+        # --- CHART --- (Dieser Teil ist jetzt ÜBER der Heatmap)
         
         fig = go.Figure()
         
@@ -447,6 +414,25 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
 
         st.markdown("---")
         
+        # --- MUSTER-ERKENNUNG / HEATMAP --- (Dieser Teil ist jetzt UNTER dem Chart)
+        if interval != '1d':
+            st.subheader("⏰ Muster-Erkennung (07:00 - 23:00 Uhr CET)")
+            heatmap_df = get_hourly_heatmap_data(df)
+            
+            if not heatmap_df.empty:
+                patterns = analyze_vertical_patterns(heatmap_df)
+                if patterns:
+                    st.info("💡 **Erkannte Muster:** " + " | ".join(patterns))
+                
+                # st.dataframe ist besser für große Datenmengen, nutze st.table für kompaktere Ansichten, hier ist st.dataframe ok.
+                st.dataframe(heatmap_df.style.background_gradient(cmap='RdYlGn', vmin=-1.0, vmax=1.0).format("{:+.2f}%").highlight_null(color='#1e1e1e'), use_container_width=True, height=350)
+            else:
+                st.info("Nicht genügend Daten für das Heatmap-Muster im gewählten Intervall vorhanden.")
+        else:
+            st.info("Heatmap ist nur für Stunden-Intervalle (30m / 60m) verfügbar.")
+        
+        st.markdown("---")
+
         # --- KORRIGIERTES CHEAT SHEET BEREICH ---
         
         st.header("🎯 Strategie-Cheat Sheet")
@@ -489,12 +475,12 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
             st.markdown(f'<div class="footer-box">', unsafe_allow_html=True)
             st.markdown(f'<div class="footer-header">PIVOT PUNKTE (Täglich)</div>', unsafe_allow_html=True)
             
-            # Nutzung der Hilfsfunktion für klickbares Icon/Tooltip
-            display_info_text("R2 (Widerst.)", f"{pivots['R2']:.2f} 🔴", 'R2', "❓")
-            display_info_text("R1 (Widerst.)", f"{pivots['R1']:.2f} 🔴", 'R1', "❓")
-            display_info_text("Pivot (P)", f"{pivots['P']:.2f}", 'PIVOT_P', "❓")
-            display_info_text("S1 (Unterst.)", f"{pivots['S1']:.2f} 🟢", 'S1', "❓")
-            display_info_text("S2 (Unterst.)", f"{pivots['S2']:.2f} 🟢", 'S2', "❓")
+            # KORRIGIERT: Nutzung von st.metric, um Hover-Tooltips zu gewährleisten
+            st.metric(label="R2 (Widerst.) 🔴", value=f"{pivots['R2']:.2f}", help=TOOLTIPS['R2'])
+            st.metric(label="R1 (Widerst.) 🔴", value=f"{pivots['R1']:.2f}", help=TOOLTIPS['R1'])
+            st.metric(label="Pivot (P)", value=f"{pivots['P']:.2f}", help=TOOLTIPS['PIVOT_P'])
+            st.metric(label="S1 (Unterst.) 🟢", value=f"{pivots['S1']:.2f}", help=TOOLTIPS['S1'])
+            st.metric(label="S2 (Unterst.) 🟢", value=f"{pivots['S2']:.2f}", help=TOOLTIPS['S2'])
             
             st.markdown(f'</div>', unsafe_allow_html=True)
 
@@ -502,8 +488,8 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
             st.markdown(f'<div class="footer-box">', unsafe_allow_html=True)
             st.markdown(f'<div class="footer-header">FIBONACCI & VWAP</div>', unsafe_allow_html=True)
             
-            # Nutzung der Hilfsfunktion für klickbares Icon/Tooltip
-            display_info_text("Fib 0.618", f"{fibs['0.618']:.2f}", 'FIB_0618', "❓")
+            # KORRIGIERT: Nutzung von st.metric, um Hover-Tooltips zu gewährleisten
+            st.metric(label="Fib 0.618", value=f"{fibs['0.618']:.2f}", help=TOOLTIPS['FIB_0618'])
             
             st.write(f"VWAP: **{df['VWAP_D'].iloc[-1] if 'VWAP_D' in df.columns else 'N/A':.2f}**")
             st.write(f"SMA 200: **{df['SMA_200'].iloc[-1] if 'SMA_200' in df.columns else 'N/A':.2f}**")
