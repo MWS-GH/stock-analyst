@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="MAG7 Pro Analyst V21 (EUR/USD Price Fix)", layout="wide", page_icon="📈")
+st.set_page_config(page_title="MAG7 Pro Analyst V22 (Exchange Rate Fix)", layout="wide", page_icon="📈")
 
 # --- CSS STYLING ---
 st.markdown("""
@@ -82,12 +82,10 @@ TOOLTIPS = {
 @st.cache_data(ttl=60) # Aktualisiert alle 60 Sekunden
 def get_eur_usd_rate():
     try:
-        # Ticker für EUR/USD
+        # Ticker für EUR/USD (Preis eines Euros in US-Dollar, z.B. 1 EUR = 1.08 USD)
         eur_usd = yf.Ticker("EURUSD=X")
-        # Hole die aktuellen Preisdaten
         df = eur_usd.history(period="1d", interval="1m")
         if not df.empty:
-            # Den letzten Schlusskurs verwenden
             return df['Close'].iloc[-1]
         return 1.08 # Fallback-Wert
     except Exception:
@@ -284,8 +282,9 @@ if st.sidebar.button("🔄 Refresh Data"):
 # Den aktuellen Wechselkurs abrufen
 EUR_USD_RATE = get_eur_usd_rate()
 
-st.title(f"💎 MAG7 Trading Dashboard (V21 - {interval} Ansicht)")
-st.caption(f"Aktueller Wechselkurs: **1 USD = {EUR_USD_RATE:.4f} EUR**")
+# KORREKTUR: Anzeigen der Wechselkurs-Definition
+st.title(f"💎 MAG7 Trading Dashboard (V22 - {interval} Ansicht)")
+st.caption(f"Aktueller Wechselkurs (EURUSD=X): **1 EUR = {EUR_USD_RATE:.4f} $**")
 st.markdown("---")
 
 
@@ -309,13 +308,13 @@ with tabs[0]:
         df = get_data(sym, interval)
         if not df.empty and len(df) > 20:
             curr_usd = df['Close'].iloc[-1]
-            curr_eur = curr_usd * EUR_USD_RATE
+            # KORRIGIERTE UMRECHNUNG: USD-Preis / EURUSD-Kurs = EUR-Preis
+            curr_eur = curr_usd / EUR_USD_RATE if EUR_USD_RATE else 0 
             
             # 1. Veränderung der letzten Periode (für Klammer)
             last_period_change_perc = ((curr_usd - df['Close'].iloc[-2]) / curr_usd) * 100
             
             # 2. Heutige Veränderung (für Hauptwert)
-            # Finde den Schlusskurs vom Vortag (Letzte Zeile des Vortags)
             yesterday_close = df[df.index.date < df.index[-1].date()]['Close'].iloc[-1] if not df[df.index.date < df.index[-1].date()].empty else df['Open'].iloc[0]
             daily_start_price = yesterday_close
             
@@ -391,7 +390,7 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
             continue
 
         curr_usd = df['Close'].iloc[-1]
-        curr_eur = curr_usd * EUR_USD_RATE
+        curr_eur = curr_usd / EUR_USD_RATE if EUR_USD_RATE else 0 # KORRIGIERT
         fibs = calculate_fibonacci(df)
         pivots = calculate_pivot_points(df) 
         signal = get_market_signal(df, curr_usd)
