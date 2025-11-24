@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="MAG7 Pro Analyst V22 (Exchange Rate Fix)", layout="wide", page_icon="📈")
+st.set_page_config(page_title="MAG7 Pro Analyst V23 (Trading Reco)", layout="wide", page_icon="📈")
 
 # --- CSS STYLING ---
 st.markdown("""
@@ -43,14 +43,18 @@ st.markdown("""
         font-weight: bold;
     }
     
-    /* Style für die Kaufempfehlung */
-    .buy-recommendation {
-        background-color: #005000;
+    /* Style für die Kaufempfehlung und Trading-Empfehlung */
+    .buy-recommendation, .trading-reco {
         padding: 10px;
         border-radius: 5px;
         font-weight: bold;
         color: white;
+        margin-top: 10px;
     }
+    .buy-recommendation { background-color: #005000; }
+    .trading-reco.buy { background-color: #1a5276; } /* Dunkelblau für Trading-Empfehlung */
+    .trading-reco.sell { background-color: #761a1a; } /* Dunkelrot für Trading-Empfehlung */
+    .trading-reco.wait { background-color: #5d5d00; } /* Dunkelgelb für Trading-Empfehlung */
 </style>
 """, unsafe_allow_html=True)
 
@@ -91,7 +95,7 @@ def get_eur_usd_rate():
     except Exception:
         return 1.08 # Fallback-Wert
 
-# NEU: Cache-Deklaration mit dynamischer TTL (Time-to-live)
+# Cache-Deklaration mit dynamischer TTL (Time-to-live)
 def data_fetch_ttl():
     # Kürzere TTL (30s) wenn Live-Update aktiv, um aktuellere Preise zu bekommen
     return 30 if st.session_state.get('auto_refresh_active', False) else 60
@@ -180,9 +184,17 @@ def calculate_fibonacci(df):
 def calculate_pivot_points(df):
     if df.empty or len(df) < 20: return {"P": 0, "R1": 0, "S1": 0, "R2": 0, "S2": 0}
     try:
-        last_day_date = df.index[-2].date() 
+        # Versuche, die Daten des letzten vollen Handelstages zu verwenden
+        if df.index[-1].hour < 21: # Gehe davon aus, dass der Markt noch offen ist, nimm den Vortag.
+             last_day_date = df.index[-2].date() 
+        else:
+             last_day_date = df.index[-1].date() 
+             
+        # Finde den tatsächlichen Handelstag vor dem aktuellen Zeitpunkt
         last_day_data = df[df.index.date == last_day_date]
-        if last_day_data.empty: return {"P": 0, "R1": 0, "S1": 0, "R2": 0, "S2": 0}
+        if last_day_data.empty: 
+            # Wenn der Vortag nicht gefunden wird, nimm die letzte vollständige Kerze
+            return {"P": 0, "R1": 0, "S1": 0, "R2": 0, "S2": 0}
         
         high = last_day_data['High'].max()
         low = last_day_data['Low'].min()
@@ -213,6 +225,49 @@ def get_market_signal(df, curr):
     elif score <= -3: return "🔥 STRONG SELL"
     elif score <= -1: return "🔴 SELL"
     return "🟡 WAIT"
+
+# NEUE FUNKTION: Empfehlung basierend auf Pivot und Signal
+def get_trading_recommendation(signal, pivots, curr_price):
+    signal_type = signal.split(' ')[-1].upper()
+    
+    if signal_type in ["BUY", "STRONG", "💎"]: # Bullish Signale
+        # Long-Empfehlung: Einstieg am Pivot-Punkt oder S1, Verkauf bei R1 oder R2
+        entry_price = pivots['S1'] if curr_price > pivots['P'] else pivots['P']
+        take_profit = pivots['R1']
+        
+        if entry_price == 0 or take_profit == 0:
+             return "🟡 WAIT", "Nicht genügend Pivot-Daten für eine genaue Empfehlung.", "wait"
+
+        # Überprüfe, ob der Einstiegspreis noch erreichbar/relevant ist
+        if curr_price > take_profit and signal_type != "STRONG": 
+             return "🟡 WAIT", "Kurs liegt bereits über dem ersten Take-Profit (R1).", "wait"
+        
+        if signal_type == "STRONG":
+            take_profit = pivots['R2'] # Höheres Ziel bei starkem Signal
+            
+        text = f"**LONG-Empfehlung:** Einstieg (Buy) bei **{entry_price:.2f} $** (nahe P oder S1), Take Profit (Sell) bei **{take_profit:.2f} $** (R1/R2)."
+        return "🟢 BUY", text, "buy"
+
+    elif signal_type in ["SELL", "🔥"]: # Bearish Signale
+        # Short-Empfehlung: Einstieg am Pivot-Punkt oder R1, Verkauf bei S1 oder S2
+        entry_price = pivots['R1'] if curr_price < pivots['P'] else pivots['P']
+        take_profit = pivots['S1']
+
+        if entry_price == 0 or take_profit == 0:
+            return "🟡 WAIT", "Nicht genügend Pivot-Daten für eine genaue Empfehlung.", "wait"
+        
+        # Überprüfe, ob der Einstiegspreis noch erreichbar/relevant ist
+        if curr_price < take_profit and signal_type != "STRONG": 
+            return "🟡 WAIT", "Kurs liegt bereits unter dem ersten Take-Profit (S1).", "wait"
+
+        if signal_type == "STRONG":
+            take_profit = pivots['S2'] # Niedrigeres Ziel bei starkem Signal
+
+        text = f"**SHORT-Empfehlung:** Einstieg (Sell) bei **{entry_price:.2f} $** (nahe P oder R1), Take Profit (Buy back) bei **{take_profit:.2f} $** (S1/S2)."
+        return "🔴 SELL", text, "sell"
+
+    else:
+        return "🟡 WAIT", "Kein klares Trading-Signal basierend auf den Indikatoren. Bitte abwarten oder auf den Pivot-Punkt (P) warten.", "wait"
 
 def get_hourly_heatmap_data(df):
     if df.index.inferred_freq in ['1d', 'D']:
@@ -283,7 +338,7 @@ if st.sidebar.button("🔄 Refresh Data"):
 EUR_USD_RATE = get_eur_usd_rate()
 
 # KORREKTUR: Anzeigen der Wechselkurs-Definition
-st.title(f"💎 MAG7 Trading Dashboard (V22 - {interval} Ansicht)")
+st.title(f"💎 MAG7 Trading Dashboard (V23 - {interval} Ansicht)")
 st.caption(f"Aktueller Wechselkurs (EURUSD=X): **1 EUR = {EUR_USD_RATE:.4f} $**")
 st.markdown("---")
 
@@ -395,6 +450,9 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         pivots = calculate_pivot_points(df) 
         signal = get_market_signal(df, curr_usd)
         
+        # NEU: Trading Empfehlung abrufen
+        reco_signal, reco_text, reco_class = get_trading_recommendation(signal, pivots, curr_usd)
+        
         # KORREKTUR: Tagesveränderung (von Open/Vortag Close) vs. Periodenveränderung
         
         # 1. Veränderung der letzten Periode (für Klammer)
@@ -428,6 +486,9 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         
         c3.metric("Resistance (R1)", f"{pivots['R1']:.2f}", help=TOOLTIPS['R1'])
         c4.metric("Support (S1)", f"{pivots['S1']:.2f}", help=TOOLTIPS['S1'])
+
+        # NEU: ANZEIGE DER HANDELSEMPFEHLUNG
+        st.markdown(f'<div class="trading-reco {reco_class}">{reco_signal}: {reco_text}</div>', unsafe_allow_html=True)
 
         st.markdown("---")
         
@@ -490,7 +551,19 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         if 'SMA_50' in df_display.columns:
             fig.add_trace(go.Scatter(x=df_display.index, y=df_display['SMA_50'], line=dict(color='orange', width=1), name='SMA 50'))
 
-        fig.add_hline(y=fibs['0.618'], line_dash="dash", line_color="green", annotation_text="Fib 0.618", annotation_position="bottom right")
+        # Pivot Punkte im Chart anzeigen (wenn im aktuellen Bereich sichtbar)
+        
+        # Aktueller Tag als Linie im Chart
+        current_day_start = df_display.index[-1].floor('D')
+        
+        if pivots['R1'] > 0 and pivots['S1'] > 0:
+            fig.add_shape(type="line", xref="x", yref="y", x0=df_display.index[0], y0=pivots['R1'], x1=df_display.index[-1], y1=pivots['R1'], line=dict(color="red", width=1, dash="dot"), name='R1')
+            fig.add_shape(type="line", xref="x", yref="y", x0=df_display.index[0], y0=pivots['S1'], x1=df_display.index[-1], y1=pivots['S1'], line=dict(color="green", width=1, dash="dot"), name='S1')
+            fig.add_shape(type="line", xref="x", yref="y", x0=df_display.index[0], y0=pivots['P'], x1=df_display.index[-1], y1=pivots['P'], line=dict(color="blue", width=1, dash="dash"), name='P')
+            
+        # Fib 0.618 im Chart anzeigen
+        if fibs['0.618'] > 0:
+            fig.add_hline(y=fibs['0.618'], line_dash="dash", line_color="lime", annotation_text="Fib 0.618", annotation_position="bottom right")
 
         fig.update_layout(height=500, margin=dict(l=0,r=0,t=0,b=0), template="plotly_dark", xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
@@ -521,7 +594,7 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
         
         st.markdown("---")
 
-        # --- KORRIGIERTES CHEAT SHEET BEREICH ---
+        # --- CHEAT SHEET BEREICH ---
         
         st.header("🎯 Strategie-Cheat Sheet")
         
