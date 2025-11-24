@@ -7,7 +7,8 @@ import time
 from datetime import datetime, timedelta
 
 # --- PAGE CONFIG ---
-st.set_config(page_title="MAG7 Pro Analyst V19 (Price & Pattern Refinement)", layout="wide", page_icon="📈")
+# KORREKTUR: st.set_config muss st.set_page_config sein!
+st.set_page_config(page_title="MAG7 Pro Analyst V20 (Config Fix)", layout="wide", page_icon="📈")
 
 # --- CSS STYLING ---
 st.markdown("""
@@ -263,7 +264,7 @@ if st.sidebar.button("🔄 Refresh Data"):
 
 
 # --- HAUPTBEREICH ---
-st.title(f"💎 MAG7 Trading Dashboard (V19 - {interval} Ansicht)")
+st.title(f"💎 MAG7 Trading Dashboard (V20 - {interval} Ansicht)")
 
 tabs = st.tabs(["🚀 SIGNALS & MARKET"] + TICKER_NAMES)
 
@@ -286,24 +287,19 @@ with tabs[0]:
         if not df.empty and len(df) > 20:
             curr = df['Close'].iloc[-1]
             
-            # KORREKTUR: Tagesveränderung (von Open/Vortag Close) vs. Periodenveränderung
-            
             # 1. Veränderung der letzten Periode (für Klammer)
-            last_period_change = ((curr - df['Close'].iloc[-2]) / curr) * 100
+            last_period_change_perc = ((curr - df['Close'].iloc[-2]) / curr) * 100
             
             # 2. Heutige Veränderung (für Hauptwert)
-            if df.index[-1].date() == df.index[0].date(): # Wenn nur ein Tag Daten (z.B. bei 1D Range)
-                daily_start_price = df['Open'].iloc[0]
-            else:
-                # Findet den Schlusskurs vom Vortag (Letzte Zeile des Vortags)
-                yesterday_close = df[df.index.date < df.index[-1].date()]['Close'].iloc[-1] if not df[df.index.date < df.index[-1].date()].empty else df['Open'].iloc[0]
-                daily_start_price = yesterday_close
+            # Finde den Schlusskurs vom Vortag (Letzte Zeile des Vortags)
+            yesterday_close = df[df.index.date < df.index[-1].date()]['Close'].iloc[-1] if not df[df.index.date < df.index[-1].date()].empty else df['Open'].iloc[0]
+            daily_start_price = yesterday_close
             
             # Prozentuale Änderung seit Tagesbeginn (oder Vortagesschluss)
-            daily_change = ((curr - daily_start_price) / daily_start_price) * 100 if daily_start_price else 0
+            daily_change_perc = ((curr - daily_start_price) / daily_start_price) * 100 if daily_start_price else 0
             
             # Kombinierte Metrik
-            change_str = f"{daily_change:+.2f}% heute ({last_period_change:+.2f}% / Periode)"
+            change_str = f"{daily_change_perc:+.2f}% heute ({last_period_change_perc:+.2f}% / Periode)"
             
             signal = get_market_signal(df, curr)
             rsi = df['RSI_14'].iloc[-1] if 'RSI_14' in df.columns else 50
@@ -317,7 +313,6 @@ with tabs[0]:
             pd.DataFrame(overview_data).style
             .format({"Preis (€/$)": "{:.2f}", "RSI": "{:.1f}"})
             .applymap(color_signals, subset=['SIGNAL']),
-            # Hier müssen wir auf die Spalte 'Change % (Tag/Periode)' verzichten, da sie jetzt ein String ist
             use_container_width=True, height=600
         )
     
@@ -399,7 +394,7 @@ for i, (name, symbol) in enumerate(TICKERS.items()):
             label="Preis (DE Zeit)", 
             value=f"{curr:.2f} (€/$)", 
             # Haupt-Delta ist die tägliche prozentuale Veränderung
-            delta=f"{daily_change_perc:+.2f}% heute",
+            delta=f"{daily_change_perc:+.2f}% heute ({last_period_change_perc:+.2f}% / Periode)",
             # Hilfe-Text für die zweite Metrik
             help=f"Preisänderung der letzten Periode ({interval}): {last_period_change_abs:+.2f} ({last_period_change_perc:+.2f}%)"
         )
